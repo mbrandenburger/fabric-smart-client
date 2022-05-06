@@ -9,6 +9,7 @@ package topology
 import (
 	"fmt"
 
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/config"
 )
 
@@ -129,6 +130,7 @@ type PeerIdentity struct {
 	EnrollmentID string
 	MSPType      string
 	MSPID        string
+	MSPPath      string
 	CacheSize    int
 	Org          string
 	Path         string `yaml:"path,omitempty"`
@@ -148,7 +150,8 @@ type Peer struct {
 	DefaultIdentity string          `yaml:"defaultMSP,omitempty"`
 	Identities      []*PeerIdentity `yaml:"identities,omitempty"`
 	DevMode         bool
-	DefaultNetwork  bool `yaml:"-"`
+	DefaultNetwork  bool       `yaml:"-"`
+	FSCNode         *node.Node `yaml:"-"`
 }
 
 // ID provides a unique identifier for a peer instance.

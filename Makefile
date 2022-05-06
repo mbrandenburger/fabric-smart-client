@@ -1,5 +1,6 @@
 # pinned versions
 FABRIC_VERSION=2.2
+ORION_VERSION=v0.2.5
 
 # integration test options
 GINKGO_TEST_OPTS ?=
@@ -62,7 +63,8 @@ monitoring-docker-images:
 
 .PHONY: orion-server-images
 orion-server-images:
-	docker pull orionbcdb/orion-server:latest
+	docker pull orionbcdb/orion-server:$(ORION_VERSION)
+	docker image tag orionbcdb/orion-server:$(ORION_VERSION) orionbcdb/orion-server:latest
 
 .PHONY: integration-tests
 integration-tests:
@@ -76,6 +78,10 @@ integration-tests:
 .PHONY: integration-tests-iou
 integration-tests-iou:
 	cd ./integration/fabric/iou; ginkgo $(GINKGO_TEST_OPTS) .
+
+.PHONY: integration-tests-iou-orion-remotedb
+integration-tests-iou-orion-remotedb: orion-server-images
+	cd ./integration/fabric/iou-orion-remotedb; ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-iou-hsm
 integration-tests-iou-hsm:
@@ -134,6 +140,7 @@ clean:
 	rm -rf ./integration/fabric/atsa/fsc/cmd
 	rm -rf ./integration/fabric/iou/cmd/
 	rm -rf ./integration/fabric/iou/testdata/
+	rm -rf ./integration/fabric/iou-orion-remotedb/cmd/
 	rm -rf ./integration/fabric/twonets/cmd
 	rm -rf ./integration/fabric/weaver/relay/cmd
 	rm -rf ./integration/fabric/fpc/echo/cmd

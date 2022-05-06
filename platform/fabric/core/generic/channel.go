@@ -83,7 +83,7 @@ type channel struct {
 func newChannel(network *network, name string, quiet bool) (*channel, error) {
 	sp := network.sp
 	// Vault
-	v, txIDStore, err := NewVault(network.config, name)
+	v, txIDStore, err := NewVault(sp, network.config, name)
 	if err != nil {
 		return nil, err
 	}
@@ -166,7 +166,12 @@ func newChannel(network *network, name string, quiet bool) (*channel, error) {
 	}
 
 	// Start delivery
-	deliveryService.Start()
+	if network.Config().IsDeliveryEnabled() {
+		logger.Debugf("Starting delivery for channel [%s]", name)
+		deliveryService.Start()
+	} else {
+		logger.Debugf("Delivery is disabled for channel [%s]", name)
+	}
 
 	return c, nil
 }
