@@ -104,7 +104,7 @@ fsc:
   web:
     enabled: true
     # HTTPS server listener address
-    address: 0.0.0.0:{{ .NodePort Peer "Web" }}
+    address: 127.0.0.1:{{ .NodePort Peer "Web" }}
     tls:
       enabled:  true
       cert:
