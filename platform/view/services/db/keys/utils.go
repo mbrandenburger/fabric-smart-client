@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package keys
 
 import (
+	"fmt"
 	"regexp"
 	"unicode/utf8"
 
@@ -14,17 +15,16 @@ import (
 )
 
 var (
-	nsRegexp  = regexp.MustCompile("^[a-zA-Z0-9._-]{1,128}$")
-	keyRegexp = regexp.MustCompile("^[a-zA-Z0-9._~\u0000=" + string(utf8.MaxRune) + "+/-]{1,}$")
+	nsRegexp = regexp.MustCompile("^[a-zA-Z0-9._-]{1,128}$")
 )
 
 const NamespaceSeparator = "\u0000"
 
 func ValidateKey(key string) error {
-	if !keyRegexp.MatchString(key) {
-		return errors.Errorf("key '%s' is invalid", key)
-	}
 	// TODO: should we enforce a length limit?
+	if !utf8.ValidString(key) {
+		return fmt.Errorf("not a valid utf8 string: [%x]", key)
+	}
 
 	return nil
 }
