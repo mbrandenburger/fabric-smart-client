@@ -14,14 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/context"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	. "github.com/onsi/gomega"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/grouper"
-
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/context"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 )
 
 var logger = flogging.MustGetLogger("fsc.integration")
@@ -35,7 +33,7 @@ type Group interface {
 }
 
 type NWO struct {
-	FSCProcesses      []ifrit.Process
+	FSCProcesses      map[string]ifrit.Process
 	Processes         []ifrit.Process
 	TerminationSignal os.Signal
 	Members           grouper.Members
@@ -56,6 +54,7 @@ func New(ctx *context.Context, platforms ...api.Platform) *NWO {
 		StartEventuallyTimeout: time.Minute,
 		StopEventuallyTimeout:  time.Minute,
 		TerminationSignal:      syscall.SIGTERM,
+		FSCProcesses:           make(map[string]ifrit.Process),
 	}
 }
 
@@ -117,7 +116,7 @@ func (n *NWO) Start() {
 	logger.Infof("Run nodes...")
 
 	// Execute members on their own stuff...
-	Runner := runner.NewOrdered(n.TerminationSignal, members)
+	Runner := grouper.NewOrdered(n.TerminationSignal, members)
 	process := ifrit.Invoke(Runner)
 	n.Processes = append(n.Processes, process)
 	Eventually(process.Ready(), n.StartEventuallyTimeout).Should(BeClosed())
@@ -134,11 +133,11 @@ func (n *NWO) Start() {
 	for _, member := range fscMembers {
 		logger.Infof("Run FSC node [%s]...", member.Name)
 
-		runner := runner.NewOrdered(n.TerminationSignal, []grouper.Member{member})
+		runner := grouper.NewOrdered(n.TerminationSignal, []grouper.Member{member})
 		process := ifrit.Invoke(runner)
 		Eventually(process.Ready(), n.StartEventuallyTimeout).Should(BeClosed())
 		n.Processes = append(n.Processes, process)
-		n.FSCProcesses = append(n.FSCProcesses, process)
+		n.FSCProcesses[member.Name] = process
 	}
 
 	// store PIDs of all processes
@@ -177,11 +176,22 @@ func (n *NWO) Stop() {
 func (n *NWO) StopFSCNode(id string) {
 	logger.Infof("Stopping fsc node [%s]...", id)
 	for _, member := range n.ViewMembers {
-		if strings.HasSuffix(member.Name, id) {
-			member.Runner.(*runner.Runner).Stop()
-			logger.Infof("Stopping fsc node [%s:%s] done", member.Name, id)
+		if !strings.HasSuffix(member.Name, id) {
+			// no node with id found, try next
+			continue
+		}
+
+		p, ok := n.FSCProcesses[member.Name]
+		if !ok {
+			logger.Infof("No processes fsc node [%s:%s] found", member.Name, id)
 			return
 		}
+
+		p.Signal(n.TerminationSignal)
+		p.Wait()
+
+		logger.Infof("Stopping fsc node [%s:%s] done", member.Name, id)
+		return
 	}
 	logger.Infof("Stopping fsc node [%s]...done", id)
 }
@@ -189,17 +199,18 @@ func (n *NWO) StopFSCNode(id string) {
 func (n *NWO) StartFSCNode(id string) {
 	logger.Infof("Starting fsc node [%s]...", id)
 	for _, member := range n.ViewMembers {
-		if strings.HasSuffix(member.Name, id) {
-			runner := runner.NewOrdered(syscall.SIGTERM, []grouper.Member{{
-				Name: id, Runner: member.Runner.(*runner.Runner).Clone(),
-			}})
-			member.Runner = runner
-			process := ifrit.Invoke(runner)
-			Eventually(process.Ready(), n.StartEventuallyTimeout).Should(BeClosed())
-			n.Processes = append(n.Processes, process)
-			logger.Infof("Starting fsc node [%s:%s] done", member.Name, id)
-			return
+		if !strings.HasSuffix(member.Name, id) {
+			// no node with id found, try next
+			continue
 		}
+		Runner := grouper.NewOrdered(syscall.SIGTERM, []grouper.Member{member})
+		//member.Runner = Runner
+		process := ifrit.Invoke(Runner)
+		Eventually(process.Ready(), n.StartEventuallyTimeout).Should(BeClosed())
+		n.Processes = append(n.Processes, process)
+		n.FSCProcesses[member.Name] = process
+		logger.Infof("Starting fsc node [%s:%s] done", member.Name, id)
+		return
 	}
 	logger.Info("Starting fsc node [%s]...done", id)
 }

@@ -51,7 +51,7 @@ require (
 	github.com/spf13/viper v1.7.0
 	github.com/stretchr/testify v1.7.1-0.20210116013205-6990a05d54c2
 	github.com/sykesm/zap-logfmt v0.0.4
-	github.com/tedsuo/ifrit v0.0.0-20191009134036-9a97d0632f00
+	github.com/tedsuo/ifrit v0.0.0-20220120221754-dd274de71113
 	github.com/test-go/testify v1.1.4
 	go.uber.org/atomic v1.7.0
 	go.uber.org/zap v1.19.1
@@ -198,6 +198,7 @@ require (
 	github.com/multiformats/go-multistream v0.3.1 // indirect
 	github.com/multiformats/go-varint v0.0.6 // indirect
 	github.com/nxadm/tail v1.4.8 // indirect
+	github.com/onsi/ginkgo/v2 v2.1.3 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.0.1 // indirect
 	github.com/opencontainers/runc v1.0.0-rc93 // indirect

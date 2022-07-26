@@ -20,24 +20,23 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/onsi/ginkgo"
-	. "github.com/onsi/gomega"
-	"github.com/onsi/gomega/gexec"
-	. "github.com/onsi/gomega/gstruct"
-	"github.com/onsi/gomega/matchers"
-	"github.com/onsi/gomega/types"
-	"github.com/tedsuo/ifrit"
-	"github.com/tedsuo/ifrit/grouper"
-	"gopkg.in/yaml.v2"
-
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
-	runner2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/commands"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/fabricconfig"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/opts"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/topology"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc"
+	"github.com/onsi/ginkgo"
+	. "github.com/onsi/gomega"
+	"github.com/onsi/gomega/gexec"
+	"github.com/onsi/gomega/gstruct"
+	"github.com/onsi/gomega/matchers"
+	"github.com/onsi/gomega/types"
+	"github.com/tedsuo/ifrit"
+	runner2 "github.com/tedsuo/ifrit/ginkgomon_v2"
+	"github.com/tedsuo/ifrit/grouper"
+	"gopkg.in/yaml.v2"
 )
 
 func (n *Network) LogSpec() string {
@@ -1022,19 +1021,19 @@ func (n *Network) OrdererRunner(o *topology.Orderer) *runner2.Runner {
 		StartCheckTimeout: 1 * time.Minute,
 	}
 
-	if n.Topology().LogOrderersToFile {
-		// set stdout to a file
-		Expect(os.MkdirAll(n.OrdererLogsFolder(), 0755)).ToNot(HaveOccurred())
-		f, err := os.Create(
-			filepath.Join(
-				n.OrdererLogsFolder(),
-				fmt.Sprintf("%s-%s.log", o.Name, n.Organization(o.Organization).Domain),
-			),
-		)
-		Expect(err).ToNot(HaveOccurred())
-		config.Stdout = f
-		config.Stderr = f
-	}
+	//if n.Topology().LogOrderersToFile {
+	//	// set stdout to a file
+	//	Expect(os.MkdirAll(n.OrdererLogsFolder(), 0755)).ToNot(HaveOccurred())
+	//	f, err := os.Create(
+	//		filepath.Join(
+	//			n.OrdererLogsFolder(),
+	//			fmt.Sprintf("%s-%s.log", o.Name, n.Organization(o.Organization).Domain),
+	//		),
+	//	)
+	//	Expect(err).ToNot(HaveOccurred())
+	//	config.Stdout = f
+	//	config.Stderr = f
+	//}
 
 	return runner2.New(config)
 }
@@ -1050,7 +1049,7 @@ func (n *Network) OrdererGroupRunner() ifrit.Runner {
 		return nil
 	}
 
-	return runner2.NewParallel(syscall.SIGTERM, members)
+	return grouper.NewParallel(syscall.SIGTERM, members)
 }
 
 // PeerRunner returns an ifrit.Runner for the specified peer. The runner can be
@@ -1077,19 +1076,19 @@ func (n *Network) PeerRunner(p *topology.Peer, env ...string) *runner2.Runner {
 		StartCheck:        `Started peer with ID=.*, .*, address=`,
 		StartCheckTimeout: 1 * time.Minute,
 	}
-	if n.Topology().LogPeersToFile {
-		// set stdout to a file
-		Expect(os.MkdirAll(n.PeerLogsFolder(), 0755)).ToNot(HaveOccurred())
-		f, err := os.Create(
-			filepath.Join(
-				n.PeerLogsFolder(),
-				fmt.Sprintf("%s-%s.log", p.Name, n.Organization(p.Organization).Domain),
-			),
-		)
-		Expect(err).ToNot(HaveOccurred())
-		config.Stdout = f
-		config.Stderr = f
-	}
+	//if n.Topology().LogPeersToFile {
+	//	// set stdout to a file
+	//	Expect(os.MkdirAll(n.PeerLogsFolder(), 0755)).ToNot(HaveOccurred())
+	//	f, err := os.Create(
+	//		filepath.Join(
+	//			n.PeerLogsFolder(),
+	//			fmt.Sprintf("%s-%s.log", p.Name, n.Organization(p.Organization).Domain),
+	//		),
+	//	)
+	//	Expect(err).ToNot(HaveOccurred())
+	//	config.Stdout = f
+	//	config.Stderr = f
+	//}
 
 	return runner2.New(config)
 }
@@ -1125,7 +1124,7 @@ func (n *Network) PeerGroupRunner() ifrit.Runner {
 	if len(members) == 0 {
 		return nil
 	}
-	return runner2.NewParallel(syscall.SIGTERM, members)
+	return grouper.NewParallel(syscall.SIGTERM, members)
 }
 
 func (n *Network) peerCommand(executablePath string, command common.Command, tlsDir string, env ...string) *exec.Cmd {
@@ -1245,7 +1244,7 @@ func (n *Network) DiscoveredPeerMatcher(p *topology.Peer, chaincodes ...string) 
 	peerCert, err := ioutil.ReadFile(n.PeerCert(p))
 	Expect(err).NotTo(HaveOccurred())
 
-	return MatchAllFields(Fields{
+	return gstruct.MatchAllFields(gstruct.Fields{
 		"MSPID":      Equal(n.Organization(p.Organization).MSPID),
 		"Endpoint":   Equal(fmt.Sprintf("127.0.0.1:%d", n.PeerPort(p, ListenPort))),
 		"Identity":   Equal(string(peerCert)),

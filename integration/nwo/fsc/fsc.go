@@ -23,6 +23,15 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/commands"
+	node2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
+	commands2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/tracing/commands"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view"
+	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view/cmd"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/crypto"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
 	"github.com/hyperledger/fabric/cmd/common/comm"
 	"github.com/hyperledger/fabric/cmd/common/signer"
 	"github.com/miracl/conflate"
@@ -31,18 +40,8 @@ import (
 	"github.com/onsi/gomega/gexec"
 	"github.com/spf13/viper"
 	"github.com/tedsuo/ifrit"
+	runner2 "github.com/tedsuo/ifrit/ginkgomon_v2"
 	"github.com/tedsuo/ifrit/grouper"
-
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
-	runner2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/commands"
-	node2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
-	commands2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/tracing/commands"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view"
-	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view/cmd"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/crypto"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
 )
 
 func init() {
@@ -462,7 +461,7 @@ func (p *Platform) BootstrapViewNodeGroupRunner() ifrit.Runner {
 			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
 		}
 	}
-	return runner2.NewParallel(syscall.SIGTERM, members)
+	return grouper.NewParallel(syscall.SIGTERM, members)
 }
 
 func (p *Platform) FSCNodeGroupRunner() ifrit.Runner {
@@ -472,7 +471,7 @@ func (p *Platform) FSCNodeGroupRunner() ifrit.Runner {
 			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
 		}
 	}
-	return runner2.NewParallel(syscall.SIGTERM, members)
+	return grouper.NewParallel(syscall.SIGTERM, members)
 }
 
 func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *runner2.Runner {
@@ -493,20 +492,20 @@ func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *runner2.Runne
 		StartCheckTimeout: 1 * time.Minute,
 	}
 
-	if p.Topology.LogToFile {
-		logDir := filepath.Join(p.NodeDir(node), "logs")
-		// set stdout to a file
-		Expect(os.MkdirAll(logDir, 0755)).ToNot(HaveOccurred())
-		f, err := os.Create(
-			filepath.Join(
-				logDir,
-				fmt.Sprintf("%s.log", node.Name),
-			),
-		)
-		Expect(err).ToNot(HaveOccurred())
-		config.Stdout = f
-		config.Stderr = f
-	}
+	//if p.Topology.LogToFile {
+	//	logDir := filepath.Join(p.NodeDir(node), "logs")
+	//	// set stdout to a file
+	//	Expect(os.MkdirAll(logDir, 0755)).ToNot(HaveOccurred())
+	//	f, err := os.Create(
+	//		filepath.Join(
+	//			logDir,
+	//			fmt.Sprintf("%s.log", node.Name),
+	//		),
+	//	)
+	//	Expect(err).ToNot(HaveOccurred())
+	//	config.Stdout = f
+	//	config.Stderr = f
+	//}
 
 	return runner2.New(config)
 }
