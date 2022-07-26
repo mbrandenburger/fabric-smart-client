@@ -29,7 +29,7 @@ import (
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/weaver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
-	"github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
@@ -54,7 +54,7 @@ type Infrastructure struct {
 
 func New(startPort int, path string, topologies ...api.Topology) (*Infrastructure, error) {
 	RegisterFailHandler(failMe)
-	defer ginkgo.GinkgoRecover()
+	defer GinkgoRecover()
 
 	var testDir string
 	var err error
