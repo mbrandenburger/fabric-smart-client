@@ -18,7 +18,6 @@ import (
 	"strings"
 	"syscall"
 	"text/template"
-	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
@@ -34,7 +33,6 @@ import (
 	"github.com/onsi/gomega/matchers"
 	"github.com/onsi/gomega/types"
 	"github.com/tedsuo/ifrit"
-	runner2 "github.com/tedsuo/ifrit/ginkgomon_v2"
 	"github.com/tedsuo/ifrit/grouper"
 	"gopkg.in/yaml.v2"
 )
@@ -1006,36 +1004,32 @@ func (n *Network) Discover(command common.Command) (*gexec.Session, error) {
 
 // OrdererRunner returns an ifrit.Runner for the specified orderer. The runner
 // can be used to start and manage an orderer process.
-func (n *Network) OrdererRunner(o *topology.Orderer) *runner2.Runner {
+func (n *Network) OrdererRunner(o *topology.Orderer) *common.Runner {
 	cmdPath := findOrBuild(ordererCMD, n.Builder.Orderer)
 	cmd := exec.Command(cmdPath)
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, fmt.Sprintf("FABRIC_CFG_PATH=%s", n.OrdererDir(o)))
 	cmd.Env = append(cmd.Env, "FABRIC_LOGGING_SPEC="+n.Logging.Spec)
 
-	config := runner2.Config{
-		AnsiColorCode:     n.nextColor(),
-		Name:              n.Prefix + "-" + o.ID(),
-		Command:           cmd,
-		StartCheck:        "Beginning to serve requests",
-		StartCheckTimeout: 1 * time.Minute,
+	if n.Topology().LogOrderersToFile {
+		// set stdout to a file
+		Expect(os.MkdirAll(n.OrdererLogsFolder(), 0755)).ToNot(HaveOccurred())
+		f, err := os.Create(
+			filepath.Join(
+				n.OrdererLogsFolder(),
+				fmt.Sprintf("%s-%s.log", o.Name, n.Organization(o.Organization).Domain),
+			),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		cmd.Stdout = io.MultiWriter(os.Stdout, f)
+		cmd.Stderr = io.MultiWriter(os.Stderr, f)
 	}
 
-	//if n.Topology().LogOrderersToFile {
-	//	// set stdout to a file
-	//	Expect(os.MkdirAll(n.OrdererLogsFolder(), 0755)).ToNot(HaveOccurred())
-	//	f, err := os.Create(
-	//		filepath.Join(
-	//			n.OrdererLogsFolder(),
-	//			fmt.Sprintf("%s-%s.log", o.Name, n.Organization(o.Organization).Domain),
-	//		),
-	//	)
-	//	Expect(err).ToNot(HaveOccurred())
-	//	config.Stdout = f
-	//	config.Stderr = f
-	//}
-
-	return runner2.New(config)
+	return &common.Runner{
+		Command:       cmd,
+		Name:          n.Prefix + "-" + o.ID(),
+		AnsiColorCode: n.nextColor(),
+	}
 }
 
 // OrdererGroupRunner returns a runner that can be used to start and stop all
@@ -1054,9 +1048,9 @@ func (n *Network) OrdererGroupRunner() ifrit.Runner {
 
 // PeerRunner returns an ifrit.Runner for the specified peer. The runner can be
 // used to start and manage a peer process.
-func (n *Network) PeerRunner(p *topology.Peer, env ...string) *runner2.Runner {
+func (n *Network) PeerRunner(p *topology.Peer, env ...string) *common.Runner {
 	cmd := n.peerCommand(
-		p.ExecutablePath,
+		p,
 		commands.NodeStart{
 			NetworkPrefix: n.Prefix,
 			PeerID:        p.ID(),
@@ -1069,28 +1063,11 @@ func (n *Network) PeerRunner(p *topology.Peer, env ...string) *runner2.Runner {
 	cmd.Env = append(cmd.Env, env...)
 	//cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
-	config := runner2.Config{
-		AnsiColorCode:     n.nextColor(),
-		Name:              n.Prefix + "-" + p.ID(),
-		Command:           cmd,
-		StartCheck:        `Started peer with ID=.*, .*, address=`,
-		StartCheckTimeout: 1 * time.Minute,
+	return &common.Runner{
+		Command:       cmd,
+		Name:          n.Prefix + "-" + p.ID(),
+		AnsiColorCode: n.nextColor(),
 	}
-	//if n.Topology().LogPeersToFile {
-	//	// set stdout to a file
-	//	Expect(os.MkdirAll(n.PeerLogsFolder(), 0755)).ToNot(HaveOccurred())
-	//	f, err := os.Create(
-	//		filepath.Join(
-	//			n.PeerLogsFolder(),
-	//			fmt.Sprintf("%s-%s.log", p.Name, n.Organization(p.Organization).Domain),
-	//		),
-	//	)
-	//	Expect(err).ToNot(HaveOccurred())
-	//	config.Stdout = f
-	//	config.Stderr = f
-	//}
-
-	return runner2.New(config)
 }
 
 func (n *Network) PeerLogsFolder() string {
@@ -1127,10 +1104,10 @@ func (n *Network) PeerGroupRunner() ifrit.Runner {
 	return grouper.NewParallel(syscall.SIGTERM, members)
 }
 
-func (n *Network) peerCommand(executablePath string, command common.Command, tlsDir string, env ...string) *exec.Cmd {
+func (n *Network) peerCommand(p *topology.Peer, command common.Command, tlsDir string, env ...string) *exec.Cmd {
 	cmdPath := findCmdAtEnv(peerCMD)
 	if len(cmdPath) == 0 {
-		cmdPath = n.Builder.Peer(executablePath)
+		cmdPath = n.Builder.Peer(p.ExecutablePath)
 	}
 	logger.Debugf("Found %s => %s", peerCMD, cmdPath)
 
@@ -1168,6 +1145,22 @@ func (n *Network) peerCommand(executablePath string, command common.Command, tls
 		cmd.Args = append(cmd.Args, "--tlsRootCertFiles")
 		cmd.Args = append(cmd.Args, n.CACertsBundlePath())
 	}
+
+	if n.Topology().LogPeersToFile {
+		// set stdout to a file
+		Expect(os.MkdirAll(n.PeerLogsFolder(), 0755)).ToNot(HaveOccurred())
+		f, err := os.Create(
+			filepath.Join(
+				n.PeerLogsFolder(),
+				fmt.Sprintf("%s-%s.log", p.Name, n.Organization(p.Organization).Domain),
+			),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		Expect(err).ToNot(HaveOccurred())
+		cmd.Stdout = io.MultiWriter(os.Stdout, f)
+		cmd.Stderr = io.MultiWriter(os.Stderr, f)
+	}
+
 	return cmd
 }
 
@@ -1193,7 +1186,7 @@ func (n *Network) PeerAdminSession(p *topology.Peer, command common.Command) (*g
 // execute in the context of a peer configuration.
 func (n *Network) PeerUserSession(p *topology.Peer, user string, command common.Command) (*gexec.Session, error) {
 	cmd := n.peerCommand(
-		p.ExecutablePath,
+		p,
 		command,
 		n.PeerUserTLSDir(p, user),
 		fmt.Sprintf("FABRIC_CFG_PATH=%s", n.PeerDir(p)),
@@ -1206,7 +1199,7 @@ func (n *Network) PeerUserSession(p *topology.Peer, user string, command common.
 // is used primarily to generate orderer configuration updates.
 func (n *Network) OrdererAdminSession(o *topology.Orderer, p *topology.Peer, command common.Command) (*gexec.Session, error) {
 	cmd := n.peerCommand(
-		p.ExecutablePath,
+		p,
 		command,
 		n.ordererUserCryptoDir(o, "Admin", "tls"),
 		fmt.Sprintf("CORE_PEER_LOCALMSPID=%s", n.Organization(o.Organization).MSPID),

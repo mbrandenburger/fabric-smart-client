@@ -454,16 +454,6 @@ func (p *Platform) GenerateCoreConfig(peer *node2.Peer) {
 	Expect(t.Execute(io.MultiWriter(core), p)).NotTo(HaveOccurred())
 }
 
-func (p *Platform) BootstrapViewNodeGroupRunner() ifrit.Runner {
-	members := grouper.Members{}
-	for _, node := range p.Peers {
-		if node.Bootstrap {
-			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
-		}
-	}
-	return grouper.NewParallel(syscall.SIGTERM, members)
-}
-
 func (p *Platform) FSCNodeGroupRunner() ifrit.Runner {
 	members := grouper.Members{}
 	for _, node := range p.Peers {
@@ -474,7 +464,7 @@ func (p *Platform) FSCNodeGroupRunner() ifrit.Runner {
 	return grouper.NewParallel(syscall.SIGTERM, members)
 }
 
-func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *runner2.Runner {
+func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *common.Runner {
 	cmd := p.fscNodeCommand(
 		node,
 		commands.NodeStart{NodeID: node.ID()},
@@ -484,30 +474,11 @@ func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *runner2.Runne
 	)
 	cmd.Env = append(cmd.Env, env...)
 
-	config := runner2.Config{
-		AnsiColorCode:     common.NextColor(),
-		Name:              node.ID(),
-		Command:           cmd,
-		StartCheck:        `Started peer with ID=.*, .*, address=`,
-		StartCheckTimeout: 1 * time.Minute,
+	return &common.Runner{
+		Command:       cmd,
+		Name:          node.ID(),
+		AnsiColorCode: p.nextColor(),
 	}
-
-	//if p.Topology.LogToFile {
-	//	logDir := filepath.Join(p.NodeDir(node), "logs")
-	//	// set stdout to a file
-	//	Expect(os.MkdirAll(logDir, 0755)).ToNot(HaveOccurred())
-	//	f, err := os.Create(
-	//		filepath.Join(
-	//			logDir,
-	//			fmt.Sprintf("%s.log", node.Name),
-	//		),
-	//	)
-	//	Expect(err).ToNot(HaveOccurred())
-	//	config.Stdout = f
-	//	config.Stderr = f
-	//}
-
-	return runner2.New(config)
 }
 
 func (p *Platform) fscNodeCommand(node *node2.Peer, command common.Command, tlsDir string, env ...string) *exec.Cmd {
@@ -532,6 +503,21 @@ func (p *Platform) fscNodeCommand(node *node2.Peer, command common.Command, tlsD
 
 		cmd.Args = append(cmd.Args, "--certfile", certfilePath)
 		cmd.Args = append(cmd.Args, "--keyfile", keyfilePath)
+	}
+
+	if p.Topology.LogToFile {
+		logDir := filepath.Join(p.NodeDir(node), "logs")
+		// set stdout to a file
+		Expect(os.MkdirAll(logDir, 0755)).ToNot(HaveOccurred())
+		f, err := os.Create(
+			filepath.Join(
+				logDir,
+				fmt.Sprintf("%s.log", node.Name),
+			),
+		)
+		Expect(err).ToNot(HaveOccurred())
+		cmd.Stdout = io.MultiWriter(os.Stdout, f)
+		cmd.Stderr = io.MultiWriter(os.Stderr, f)
 	}
 
 	cmd.Args = append(cmd.Args, "--logging-level", p.Topology.Logging.Spec)
