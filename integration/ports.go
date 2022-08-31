@@ -28,6 +28,7 @@ const (
 	PingPong2Port
 	PingPongWithAdminPort
 	IOUPort
+	IOUWithOrionRemoteDBPort
 	IOUHSMPort
 	AssetTransferSecuredAgreementWithChaincode
 	AssetTransferSecuredAgreementWithApprovers

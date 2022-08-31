@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	DefaultMSPCacheSize        = 3
-	DefaultBroadcastNumRetries = 3
+	DefaultMSPCacheSize       = 3
+	DefaultOrderingNumRetries = 3
+	VaultPersistenceOptsKey   = "vault.persistence.opts"
 )
 
 // configService models a configuration registry
@@ -145,8 +146,8 @@ func (c *Config) VaultPersistenceType() string {
 	return c.configService.GetString("fabric." + c.prefix + "vault.persistence.type")
 }
 
-func (c *Config) VaultPersistenceOpts(opts interface{}) error {
-	return c.configService.UnmarshalKey("fabric."+c.prefix+"vault.persistence.opts", opts)
+func (c *Config) VaultPersistencePrefix() string {
+	return VaultPersistenceOptsKey
 }
 
 func (c *Config) VaultTXStoreCacheSize(defaultCacheSize int) int {
@@ -225,14 +226,24 @@ func (c *Config) MSPCacheSize() int {
 	return i
 }
 
-func (c *Config) BroadcastNumRetries() int {
+func (c *Config) OrderingNumRetries() int {
 	v := c.configService.GetInt("fabric." + c.prefix + "ordering.numRetries")
 	if v == 0 {
-		return DefaultBroadcastNumRetries
+		return DefaultOrderingNumRetries
 	}
 	return v
 }
 
-func (c *Config) BroadcastRetryInterval() time.Duration {
+func (c *Config) OrderingRetryInterval() time.Duration {
 	return c.configService.GetDuration("fabric." + c.prefix + "ordering.retryInternal")
+}
+
+// IsDeliveryEnabled returns true if the delivery service is enabled.
+// If the property is not set, it returns true.
+func (c *Config) IsDeliveryEnabled() bool {
+	k := "fabric." + c.prefix + "delivery.enabled"
+	if !c.configService.IsSet(k) {
+		return true
+	}
+	return c.configService.GetBool(k)
 }

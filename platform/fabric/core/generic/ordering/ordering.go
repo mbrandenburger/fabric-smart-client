@@ -216,8 +216,8 @@ func (o *service) broadcastEnvelope(env *common2.Envelope) error {
 
 	// send the envelope for ordering
 	var status *ab.BroadcastResponse
-	retries := o.network.Config().BroadcastNumRetries()
-	retryInternal := o.network.Config().BroadcastRetryInterval()
+	retries := o.network.Config().OrderingNumRetries()
+	retryInternal := o.network.Config().OrderingRetryInterval()
 	for i := 0; i < retries; i++ {
 		if i > 0 {
 			logger.Debugf("broadcast, retry [%d]...", i)
