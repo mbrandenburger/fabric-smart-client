@@ -8,11 +8,16 @@ package comm
 
 import (
 	"context"
-
-	"github.com/pkg/errors"
+	"sync"
+	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm/host"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm/utils"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/metrics"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type EndpointService interface {
@@ -22,92 +27,146 @@ type EndpointService interface {
 
 type ConfigService interface {
 	GetString(key string) string
+	GetPath(key string) string
 }
 
 type Service struct {
-	PrivateKeyDispenser PrivateKeyDispenser
-	EndpointService     EndpointService
-	ConfigService       ConfigService
-	DefaultIdentity     view2.Identity
-	Node                *P2PNode
+	HostProvider    host.GeneratorProvider
+	EndpointService EndpointService
+	ConfigService   ConfigService
+	DefaultIdentity view2.Identity
+
+	Node            *P2PNode
+	NodeSync        sync.RWMutex
+	tracerProvider  trace.TracerProvider
+	metricsProvider metrics.Provider
 }
 
-func NewService(
-	privateKeyDispenser PrivateKeyDispenser,
-	endpointService EndpointService,
-	configService ConfigService,
-	defaultIdentity view2.Identity,
-) (*Service, error) {
+func NewService(hostProvider host.GeneratorProvider, endpointService EndpointService, configService ConfigService, defaultIdentity view2.Identity, tracerProvider trace.TracerProvider, metricsProvider metrics.Provider) (*Service, error) {
 	s := &Service{
-		PrivateKeyDispenser: privateKeyDispenser,
-		EndpointService:     endpointService,
-		ConfigService:       configService,
-		DefaultIdentity:     defaultIdentity,
-	}
-	if err := s.init(); err != nil {
-		return nil, err
+		HostProvider:    hostProvider,
+		EndpointService: endpointService,
+		ConfigService:   configService,
+		DefaultIdentity: defaultIdentity,
+		tracerProvider:  tracerProvider,
+		metricsProvider: metricsProvider,
 	}
 	return s, nil
 }
 
 func (s *Service) Start(ctx context.Context) {
-	s.Node.Start(ctx)
+	go func() {
+		for {
+			logger.Debugf("start communication service...")
+			if err := s.init(); err != nil {
+				logger.Errorf("failed to initialize communication service [%s], wait a bit and try again", err)
+				time.Sleep(10 * time.Second)
+				continue
+			}
+			// Init done, we can start
+			s.Node.Start(ctx)
+			break
+		}
+	}()
 }
 
 func (s *Service) Stop() {
+	if err := s.init(); err != nil {
+		logger.Warnf("communication service not ready [%s], cannot stop", err)
+		return
+	}
 	s.Node.Stop()
 }
 
 func (s *Service) NewSessionWithID(sessionID, contextID, endpoint string, pkid []byte, caller view2.Identity, msg *view2.Message) (view2.Session, error) {
+	if err := s.init(); err != nil {
+		return nil, errors.Errorf("communication service not ready [%s]", err)
+	}
 	return s.Node.NewSessionWithID(sessionID, contextID, endpoint, pkid, caller, msg)
 }
 
 func (s *Service) NewSession(caller string, contextID string, endpoint string, pkid []byte) (view2.Session, error) {
+	if err := s.init(); err != nil {
+		return nil, errors.Errorf("communication service not ready [%s]", err)
+	}
 	return s.Node.NewSession(caller, contextID, endpoint, pkid)
 }
 
 func (s *Service) MasterSession() (view2.Session, error) {
+	if err := s.init(); err != nil {
+		return nil, errors.Errorf("communication service not ready [%s]", err)
+	}
 	return s.Node.MasterSession()
 }
 
-func (s *Service) DeleteSessions(sessionID string) {
-	s.Node.DeleteSessions(sessionID)
+func (s *Service) DeleteSessions(ctx context.Context, sessionID string) {
+	if err := s.init(); err != nil {
+		logger.Warnf("communication service not ready [%s], cannot delete any session", err)
+		return
+	}
+	s.Node.DeleteSessions(ctx, sessionID)
+}
+
+func (s *Service) Addresses(id view2.Identity) ([]string, error) {
+	// TODO: implement this
+	return nil, nil
 }
 
 func (s *Service) init() error {
+	s.NodeSync.RLock()
+	if s.Node != nil {
+		s.NodeSync.RUnlock()
+		return nil
+	}
+	s.NodeSync.RUnlock()
+	s.NodeSync.Lock()
+	defer s.NodeSync.Unlock()
+	if s.Node != nil {
+		return nil
+	}
+
 	p2pListenAddress := s.ConfigService.GetString("fsc.p2p.listenAddress")
-	p2pBootstrapNode := s.ConfigService.GetString("fsc.p2p.bootstrapNode")
+	p2pBootstrapNode := s.ConfigService.GetString("fsc.p2p.opts.bootstrapNode")
+	keyFile := s.ConfigService.GetPath("fsc.identity.key.file")
+	certFile := s.ConfigService.GetPath("fsc.identity.cert.file")
+
 	if len(p2pBootstrapNode) == 0 {
 		// this is a bootstrap node
-		logger.Infof("new p2p bootstrap node [%s]", p2pListenAddress)
+		logger.Debugf("new p2p bootstrap node [%s]", p2pListenAddress)
 
-		var err error
-		s.Node, err = NewBootstrapNode(
-			p2pListenAddress,
-			s.PrivateKeyDispenser,
-		)
-		if err != nil {
-			return errors.Wrapf(err, "failed initializing bootstrap p2p manager [%s]", p2pListenAddress)
-		}
-	} else {
-		bootstrapNodeID, err := s.EndpointService.GetIdentity(p2pBootstrapNode, nil)
+		h, err := s.HostProvider.NewBootstrapHost(p2pListenAddress, keyFile, certFile)
 		if err != nil {
 			return err
 		}
-		_, endpoints, pkID, err := s.EndpointService.Resolve(bootstrapNodeID)
+		s.Node, err = NewNode(h, s.tracerProvider, s.metricsProvider)
 		if err != nil {
-			return err
+			return errors.Wrapf(err, "failed to initialize bootstrap p2p node [%s]", p2pListenAddress)
 		}
+		return nil
+	}
 
-		logger.Infof("new p2p node [%s,%s]", p2pListenAddress, AddressToEndpoint(endpoints[view.P2PPort])+"/p2p/"+string(pkID))
-		s.Node, err = NewNode(
-			p2pListenAddress,
-			AddressToEndpoint(endpoints[view.P2PPort])+"/p2p/"+string(pkID),
-			s.PrivateKeyDispenser,
-		)
-		if err != nil {
-			return errors.Wrapf(err, "failed initializing node p2p manager [%s,%s]", p2pListenAddress, AddressToEndpoint(endpoints[view.P2PPort])+"/p2p/"+string(pkID))
-		}
+	bootstrapNodeID, err := s.EndpointService.GetIdentity(p2pBootstrapNode, nil)
+	if err != nil {
+		return errors.WithMessagef(err, "failed to get p2p bootstrap node's resolver entry [%s]", p2pBootstrapNode)
+	}
+	_, endpoints, pkID, err := s.EndpointService.Resolve(bootstrapNodeID)
+	if err != nil {
+		return errors.WithMessagef(err, "failed to resolve bootstrap node id [%s:%s]", p2pBootstrapNode, bootstrapNodeID)
+	}
+
+	bootstrap, err := utils.AddressToEndpoint(endpoints[view.P2PPort])
+	if err != nil {
+		return errors.WithMessagef(err, "failed to get the endpoint of the bootstrap node from [%s:%s], [%s]", p2pBootstrapNode, bootstrapNodeID, endpoints[view.P2PPort])
+	}
+	bootstrap = bootstrap + "/p2p/" + string(pkID)
+	logger.Debugf("new p2p node [%s,%s]", p2pListenAddress, bootstrap)
+	h, err := s.HostProvider.NewHost(p2pListenAddress, keyFile, certFile, bootstrap)
+	if err != nil {
+		return err
+	}
+	s.Node, err = NewNode(h, s.tracerProvider, s.metricsProvider)
+	if err != nil {
+		return errors.Wrapf(err, "failed to initialize node p2p manager [%s,%s]", p2pListenAddress, bootstrap)
 	}
 	return nil
 }

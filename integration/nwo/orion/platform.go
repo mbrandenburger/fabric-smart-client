@@ -11,7 +11,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/url"
 	"os"
 	"path"
@@ -23,14 +22,21 @@ import (
 	api2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/docker"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/network"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	"github.com/hyperledger-labs/orion-server/config"
 	"github.com/hyperledger-labs/orion-server/pkg/server/testutils"
 	. "github.com/onsi/gomega"
 	"github.com/tedsuo/ifrit/grouper"
 	"gopkg.in/yaml.v2"
+)
+
+const (
+	Port          = network.HostPort
+	PeerPortID    = "peer"
+	OrdererPortID = "orderer"
 )
 
 var logger = flogging.MustGetLogger("nwo.orion")
@@ -196,7 +202,8 @@ func (p *Platform) PostRun(load bool) {
 	Expect(err).NotTo(HaveOccurred())
 
 	p.StartOrionServer()
-	p.InitOrionServer()
+	err = p.InitOrionServer()
+	Expect(err).NotTo(HaveOccurred())
 }
 
 func (p *Platform) Cleanup() {
@@ -209,45 +216,91 @@ func (p *Platform) Cleanup() {
 	Expect(err).NotTo(HaveOccurred())
 }
 
+func (p *Platform) DeleteVault(id string) {
+	fscTopology := p.Context.TopologyByName("fsc").(*fsc.Topology)
+	found := false
+	for _, node := range fscTopology.Nodes {
+		if strings.Contains(node.Name, id) {
+			for _, uniqueName := range node.ReplicaUniqueNames() {
+				Expect(os.RemoveAll(p.FSCNodeVaultDir(uniqueName))).ToNot(HaveOccurred())
+			}
+			found = true
+		}
+	}
+	Expect(found).To(BeTrue(), "cannot find node [%s]", id)
+}
+
 func (p *Platform) replaceForDocker(origin string) string {
 	return strings.Replace(origin, p.rootDir(), "/etc/orion-server", 1)
+}
+
+func ReadHelperConfig(configPath string) (*HelperConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
+	}
+	var c HelperConfig
+	if err := yaml.Unmarshal(data, &c); err != nil {
+		return nil, err
+	}
+	return &c, err
+}
+
+func (p *Platform) InitOrionServer() error {
+	c, err := ReadHelperConfig(p.HelperConfigPath())
+	if err != nil {
+		return err
+	}
+	return c.InitConfig.Init()
 }
 
 func (p *Platform) generateExtension() {
 	fscTopology := p.Context.TopologyByName("fsc").(*fsc.Topology)
 	for _, node := range fscTopology.Nodes {
-		opt := Options(&node.Options)
+		opt := Options(node.Options)
 		role := opt.Role()
+		if len(role) == 0 {
+			// skip
+			continue
+		}
 
-		t, err := template.New("view_extension").Funcs(template.FuncMap{
-			"Name":       func() string { return p.Name() },
-			"ServerURL":  func() string { return p.serverUrl.String() },
-			"ServerID":   func() string { return p.localConfig.Server.Identity.ID },
-			"CACertPath": func() string { return p.caPem() },
-			"Identities": func() []Identity {
-				return []Identity{
-					{
-						Name: role,
-						Cert: p.pem(role),
-						Key:  p.key(role),
-					},
-				}
-			},
-			"FSCNodeVaultPath": func() string { return p.FSCNodeVaultDir(node) },
-		}).Parse(ExtensionTemplate)
-		Expect(err).NotTo(HaveOccurred())
+		for _, uniqueName := range node.ReplicaUniqueNames() {
+			t, err := template.New("view_extension").Funcs(template.FuncMap{
+				"Name":       func() string { return p.Name() },
+				"ServerURL":  func() string { return p.serverUrl.String() },
+				"ServerID":   func() string { return p.localConfig.Server.Identity.ID },
+				"CACertPath": func() string { return p.caPem() },
+				"Identities": func() []Identity {
+					return []Identity{
+						{
+							Name: role,
+							Cert: p.PemPath(role),
+							Key:  p.KeyPath(role),
+						},
+					}
+				},
+				"FSCNodeVaultPath": func() string { return p.FSCNodeVaultDir(uniqueName) },
+			}).Parse(ExtensionTemplate)
+			Expect(err).NotTo(HaveOccurred())
 
-		extension := bytes.NewBuffer([]byte{})
-		err = t.Execute(io.MultiWriter(extension), p)
-		Expect(err).NotTo(HaveOccurred())
+			extension := bytes.NewBuffer([]byte{})
+			err = t.Execute(io.MultiWriter(extension), p)
+			Expect(err).NotTo(HaveOccurred())
 
-		p.Context.AddExtension(node.ID(), api2.OrionExtension, extension.String())
+			p.Context.AddExtension(uniqueName, api2.OrionExtension, extension.String())
+		}
 	}
 }
 
 func (p *Platform) writeConfigFile() {
-	p.nodePort = p.Context.ReservePort()
-	p.peerPort = p.Context.ReservePort()
+	p.Context.SetPortsByPeerID("", PeerPortID, api2.Ports{Port: p.Context.ReservePort()})
+	p.Context.SetPortsByOrdererID("", OrdererPortID, api2.Ports{Port: p.Context.ReservePort()})
+
+	p.nodePort = p.Context.PortsByOrdererID("", OrdererPortID)[Port]
+	p.peerPort = p.Context.PortsByPeerID("", PeerPortID)[Port]
+
+	nodeHost := utils.DefaultString(p.Context.HostByOrdererID("", OrdererPortID), "127.0.0.1")
+	peerHost := utils.DefaultString(p.Context.HostByPeerID("", PeerPortID), "127.0.0.1")
 
 	p.localConfig = &config.LocalConfiguration{
 		Server: config.ServerConf{
@@ -265,16 +318,16 @@ func (p *Platform) writeConfigFile() {
 				LedgerDirectory: p.replaceForDocker(p.databaseDir()),
 			},
 			QueueLength: config.QueueLengthConf{
-				Transaction:               10,
-				ReorderedTransactionBatch: 10,
-				Block:                     10,
+				Transaction:               1000,
+				ReorderedTransactionBatch: 1000,
+				Block:                     1000,
 			},
 			LogLevel: "debug",
 		},
 		BlockCreation: config.BlockCreationConf{
 			MaxBlockSize:                1000000,
-			MaxTransactionCountPerBlock: 1,
-			BlockTimeout:                500 * time.Millisecond,
+			MaxTransactionCountPerBlock: 100,
+			BlockTimeout:                100 * time.Millisecond,
 		},
 		Replication: config.ReplicationConf{
 			SnapDir: p.replaceForDocker(p.snapDir()),
@@ -294,7 +347,7 @@ func (p *Platform) writeConfigFile() {
 		Nodes: []*config.NodeConf{
 			{
 				NodeID:          "bdb-node-1",
-				Host:            "0.0.0.0",
+				Host:            nodeHost,
 				Port:            uint32(p.nodePort),
 				CertificatePath: p.replaceForDocker(p.serverPem()),
 			},
@@ -305,7 +358,7 @@ func (p *Platform) writeConfigFile() {
 				{
 					NodeId:   "bdb-node-1",
 					RaftId:   1,
-					PeerHost: "0.0.0.0",
+					PeerHost: peerHost,
 					PeerPort: uint32(p.peerPort),
 				},
 			},
@@ -329,20 +382,51 @@ func (p *Platform) writeConfigFile() {
 	c, err := yaml.Marshal(p.localConfig)
 	Expect(err).ToNot(HaveOccurred())
 
-	err = ioutil.WriteFile(p.configFile(), c, 0644)
+	err = os.WriteFile(p.configFile(), c, 0644)
 	Expect(err).ToNot(HaveOccurred())
 
 	b, err := yaml.Marshal(bootstrap)
 	Expect(err).ToNot(HaveOccurred())
 
-	err = ioutil.WriteFile(p.boostrapSharedConfig(), b, 0644)
+	err = os.WriteFile(p.boostrapSharedConfig(), b, 0644)
 	Expect(err).ToNot(HaveOccurred())
 
-	p.serverUrl, err = url.Parse(fmt.Sprintf("http://%s:%d", "127.0.0.1", p.localConfig.Server.Network.Port))
+	p.serverUrl, err = url.Parse(fmt.Sprintf("http://%s:%d", nodeHost, p.nodePort))
 	Expect(err).ToNot(HaveOccurred())
 
 	p.saveServerUrl(p.serverUrl)
 	Expect(err).ToNot(HaveOccurred())
+
+	certPaths := map[string]string{}
+	for _, db := range p.Topology.DBs {
+		for _, role := range db.Roles {
+			certPaths[role] = p.PemPath(role)
+		}
+	}
+	init := &InitConfig{
+		ServerUrl:           p.ServerUrl(),
+		CACertPath:          p.caPem(),
+		ServerID:            p.ServerID(),
+		AdminID:             "admin",
+		AdminCertPath:       p.PemPath("admin"),
+		AdminPrivateKeyPath: p.KeyPath("admin"),
+		DBs:                 p.Topology.DBs,
+		CertPaths:           certPaths,
+	}
+
+	i, err := yaml.Marshal(HelperConfig{InitConfig: init})
+	Expect(err).ToNot(HaveOccurred())
+
+	Expect(os.MkdirAll(p.configDir(), 0766)).To(Succeed())
+	Expect(os.WriteFile(p.HelperConfigPath(), i, 0766)).To(Succeed())
+}
+
+func (p *Platform) ServerUrl() string {
+	return p.serverUrl.String()
+}
+
+func (p *Platform) ServerID() string {
+	return p.localConfig.Server.Identity.ID
 }
 
 func (p *Platform) rootDir() string {
@@ -401,27 +485,19 @@ func (p *Platform) walDir() string {
 	)
 }
 
-func (p *Platform) serverPem() string {
-	return filepath.Join(p.roleCryptoDir("server"), "server.pem")
-}
+func (p *Platform) serverPem() string { return p.PemPath("server") }
 
-func (p *Platform) serverKey() string {
-	return filepath.Join(p.roleCryptoDir("server"), "server.key")
-}
+func (p *Platform) serverKey() string { return p.KeyPath("server") }
 
-func (p *Platform) caPem() string {
-	return filepath.Join(p.roleCryptoDir("CA"), "CA.pem")
-}
+func (p *Platform) caPem() string { return p.PemPath("CA") }
 
-func (p *Platform) adminPem() string {
-	return filepath.Join(p.roleCryptoDir("admin"), "admin.pem")
-}
+func (p *Platform) adminPem() string { return p.PemPath("admin") }
 
-func (p *Platform) pem(role string) string {
+func (p *Platform) PemPath(role string) string {
 	return filepath.Join(p.roleCryptoDir(role), role+".pem")
 }
 
-func (p *Platform) key(role string) string {
+func (p *Platform) KeyPath(role string) string {
 	return filepath.Join(p.roleCryptoDir(role), role+".key")
 }
 
@@ -436,6 +512,13 @@ func (p *Platform) boostrapSharedConfig() string {
 	return filepath.Join(
 		p.configDir(),
 		"bootstrap-shared-config.yaml",
+	)
+}
+
+func (p *Platform) HelperConfigPath() string {
+	return filepath.Join(
+		p.configDir(),
+		"helper-config.yaml",
 	)
 }
 
@@ -454,6 +537,6 @@ func (p *Platform) saveServerUrl(url *url.URL) {
 	serverUrlFile.Close()
 }
 
-func (p *Platform) FSCNodeVaultDir(peer *node.Node) string {
-	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", peer.ID(), "vault")
+func (p *Platform) FSCNodeVaultDir(uniqueName string) string {
+	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", uniqueName, "vault")
 }

@@ -15,10 +15,10 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
+	utils2 "github.com/hyperledger-labs/fabric-smart-client/platform/common/utils"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 	"github.com/hyperledger/fabric-protos-go/msp"
@@ -74,15 +74,10 @@ func (d *edsaVerifier) Verify(message, sigma []byte) error {
 		return err
 	}
 
-	hash := sha256.New()
-	n, err := hash.Write(message)
-	if n != len(message) {
-		return errors.Errorf("hash failure")
-	}
+	digest, err := utils2.SHA256(message)
 	if err != nil {
 		return err
 	}
-	digest := hash.Sum(nil)
 
 	lowS, err := IsLowS(d.pk, signature.S)
 	if err != nil {
@@ -206,7 +201,7 @@ func PemDecodeKey(keyBytes []byte) (interface{}, error) {
 func IsLowS(k *ecdsa.PublicKey, s *big.Int) (bool, error) {
 	halfOrder, ok := curveHalfOrders[k.Curve]
 	if !ok {
-		return false, fmt.Errorf("curve not recognized [%s]", k.Curve)
+		return false, errors.Errorf("curve not recognized [%s]", k.Curve)
 	}
 
 	return s.Cmp(halfOrder) != 1, nil

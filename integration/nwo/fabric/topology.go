@@ -7,9 +7,12 @@ SPDX-License-Identifier: Apache-2.0
 package fabric
 
 import (
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/context"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/opts"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/topology"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/sql"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/sql/postgres"
 )
 
 var (
@@ -131,13 +134,16 @@ func NewTopologyWithName(name string) *topology.Topology {
 	return &topology.Topology{
 		TopologyName: name,
 		TopologyType: "fabric",
+		Driver:       "generic",
+		TLSEnabled:   true,
 		Logging: &topology.Logging{
-			Spec:   "grpc=error:chaincode=debug:endorser=debug:info",
+			Spec:   "info",
 			Format: "'%{color}%{time:2006-01-02 15:04:05.000 MST} [%{module}] %{shortfunc} -> %{level:.4s} %{id:03x}%{color:reset} %{message}'",
 		},
 		Organizations: []*topology.Organization{{
 			Name:          "OrdererOrg",
 			MSPID:         "OrdererMSP",
+			MSPType:       "bccsp",
 			Domain:        "example.com",
 			EnableNodeOUs: false,
 			Users:         0,
@@ -174,4 +180,34 @@ func NewTopologyWithName(name string) *topology.Topology {
 			},
 		}},
 	}
+}
+
+// WithPostgresVaultPersistence is a configuration with SQL vault persistence
+func WithPostgresVaultPersistence(config postgres.DataSourceProvider) node.Option {
+	return func(o *node.Options) error {
+		if config != nil {
+			o.PutPersistence("fabric.vault", node.PersistenceOpts{
+				Type: sql.SQLPersistence,
+				SQL: node.SQLOpts{
+					DataSource: config.DataSource(),
+					DriverType: sql.Postgres,
+				},
+			})
+		}
+		return nil
+	}
+}
+
+// Network returns the fabric network from the passed context bound to the passed id.
+// It returns nil, if nothing is found
+func Network(ctx *context.Context, id string) *Platform {
+	p := ctx.PlatformByName(id)
+	if p == nil {
+		return nil
+	}
+	fp, ok := p.(*Platform)
+	if ok {
+		return fp
+	}
+	return nil
 }

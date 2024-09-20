@@ -35,19 +35,24 @@ func (pt *ProcessedTransaction) Results() []byte {
 	return pt.pt.Results()
 }
 
+// ValidationCode of this transaction
+func (pt *ProcessedTransaction) ValidationCode() int32 {
+	return pt.pt.ValidationCode()
+}
+
 // Ledger models the ledger stored at a remote Fabric peer
 type Ledger struct {
-	ch *Channel
+	l driver.Ledger
 }
 
 // GetBlockNumberByTxID returns the number of the block where the passed transaction appears
 func (l *Ledger) GetBlockNumberByTxID(txID string) (uint64, error) {
-	return l.ch.ch.GetBlockNumberByTxID(txID)
+	return l.l.GetBlockNumberByTxID(txID)
 }
 
 // GetTransactionByID retrieves a transaction by id
 func (l *Ledger) GetTransactionByID(txID string) (*ProcessedTransaction, error) {
-	pt, err := l.ch.ch.GetTransactionByID(txID)
+	pt, err := l.l.GetTransactionByID(txID)
 	if err != nil {
 		return nil, err
 	}
@@ -56,7 +61,7 @@ func (l *Ledger) GetTransactionByID(txID string) (*ProcessedTransaction, error) 
 
 // GetBlockByNumber fetches a block by number
 func (l *Ledger) GetBlockByNumber(number uint64) (*Block, error) {
-	b, err := l.ch.ch.GetBlockByNumber(number)
+	b, err := l.l.GetBlockByNumber(number)
 	if err != nil {
 		return nil, err
 	}

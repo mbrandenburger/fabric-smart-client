@@ -37,12 +37,21 @@ func NewBuilderWithServiceProvider(sp view2.ServiceProvider) *Builder {
 	return &Builder{sp: sp}
 }
 
-func (t *Builder) NewTransaction() (*Transaction, error) {
-	return t.NewTransactionForChannel("")
-}
-
-func (t *Builder) NewTransactionForChannel(channel string) (*Transaction, error) {
-	return t.newTransaction(nil, "", channel, nil, nil, false)
+func (t *Builder) NewTransaction(opts ...fabric.TransactionOption) (*Transaction, error) {
+	fabricOptions, err := fabric.CompileTransactionOptions(opts...)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to compile options")
+	}
+	return t.newTransactionWithType(
+		fabricOptions.Creator,
+		"",
+		fabricOptions.Channel,
+		fabricOptions.Nonce,
+		nil,
+		false,
+		fabricOptions.RawRequest,
+		&fabricOptions.TransactionType,
+	)
 }
 
 func (t *Builder) NewTransactionFromBytes(bytes []byte) (*Transaction, error) {
@@ -75,46 +84,54 @@ func (t *Builder) NewTransactionWithIdentity(id view.Identity) (*Transaction, er
 }
 
 func (t *Builder) newTransaction(creator []byte, network, channel string, nonce, raw []byte, envelope bool) (*Transaction, error) {
+	return t.newTransactionWithType(creator, network, channel, nonce, raw, envelope, nil, nil)
+}
+
+func (t *Builder) newTransactionWithType(creator []byte, network, channel string, nonce, raw []byte, envelope bool, rawRequest []byte, tType *fabric.TransactionType) (*Transaction, error) {
 	logger.Debugf("NewTransaction [%s,%s,%s]", view.Identity(creator).UniqueID(), channel, hash.Hashable(raw).String())
 	defer logger.Debugf("NewTransaction...done.")
 
-	fNetwork := fabric.GetFabricNetworkService(t.sp, network)
-	if fNetwork == nil {
-		return nil, errors.Errorf("fabric network service [%s] not found", network)
+	fNetwork, err := fabric.GetFabricNetworkService(t.sp, network)
+	if err != nil {
+		return nil, errors.WithMessagef(err, "fabric network service [%s] not found", network)
 	}
 	if len(creator) == 0 {
 		creator = fNetwork.IdentityProvider().DefaultIdentity()
 	}
-	fabricTransaction, err := fNetwork.TransactionManager().NewTransaction(
+
+	options := []fabric.TransactionOption{
 		fabric.WithCreator(creator),
 		fabric.WithNonce(nonce),
 		fabric.WithChannel(channel),
-	)
+	}
+	if tType != nil {
+		options = append(options, fabric.WithTransactionType(*tType))
+	}
+	if rawRequest != nil {
+		options = append(options, fabric.WithRawRequest(rawRequest))
+	}
+
+	var fabricTransaction *fabric.Transaction
+	if len(raw) == 0 {
+		fabricTransaction, err = fNetwork.TransactionManager().NewTransaction(options...)
+	} else if envelope {
+		fabricTransaction, err = fNetwork.TransactionManager().NewTransactionFromEnvelopeBytes(raw, options...)
+	} else {
+		fabricTransaction, err = fNetwork.TransactionManager().NewTransactionFromBytes(raw, options...)
+	}
+
 	if err != nil {
 		return nil, err
 	}
-
-	tx := &Transaction{
+	return &Transaction{
 		ServiceProvider: t.sp,
 		Transaction:     fabricTransaction,
-	}
-
-	if len(raw) != 0 {
-		if envelope {
-			err = tx.SetFromEnvelopeBytes(raw)
-		} else {
-			err = tx.SetFromBytes(raw)
-		}
-		if err != nil {
-			return nil, err
-		}
-	}
-	return tx, nil
+	}, nil
 }
 
-func NewTransaction(context view.Context) (*Builder, *Transaction, error) {
+func NewTransaction(context view.Context, opts ...fabric.TransactionOption) (*Builder, *Transaction, error) {
 	txBuilder := NewBuilder(context)
-	tx, err := txBuilder.NewTransaction()
+	tx, err := txBuilder.NewTransaction(opts...)
 	if err != nil {
 		return nil, nil, err
 	}

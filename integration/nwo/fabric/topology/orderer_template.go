@@ -29,19 +29,23 @@ General:
     ReplicationBufferSize: 20971520
     ReplicationPullTimeout: 5s
     ReplicationRetryTimeout: 5s
-    ListenAddress: 127.0.0.1
+    ListenAddress: 0.0.0.0
     ListenPort: {{ .OrdererPort Orderer "Cluster" }}
   Keepalive:
     ServerMinInterval: 60s
     ServerInterval: 7200s
     ServerTimeout: 20s
+  {{ if not $w.SystemChannel -}}
+  BootstrapMethod: none
+  {{ else -}}
   BootstrapMethod: file
   BootstrapFile: {{ $w.OrdererBootstrapFile }}
+  {{ end -}}
   LocalMSPDir: {{ $w.OrdererLocalMSPDir Orderer }}
   LocalMSPID: {{ ($w.Organization Orderer.Organization).MSPID }}
   Profile:
     Enabled: false
-    Address: 127.0.0.1:{{ .OrdererPort Orderer "Profile" }}
+    Address: {{ .OrdererAddress Orderer "Profile" }}
   BCCSP:
     Default: SW
     SW:
@@ -51,41 +55,10 @@ General:
         KeyStore:
   Authentication:
     TimeWindow: 15m
+Admin:
+  ListenAddress: 0.0.0.0:{{ .OrdererPort Orderer "Admin" }}
 FileLedger:
   Location: {{ .OrdererDir Orderer }}/system
-  Prefix: hyperledger-fabric-ordererledger
-{{ if eq .Consensus.Type "kafka" -}}
-Kafka:
-  Retry:
-    ShortInterval: 5s
-    ShortTotal: 10m
-    LongInterval: 5m
-    LongTotal: 12h
-    NetworkTimeouts:
-      DialTimeout: 10s
-      ReadTimeout: 10s
-      WriteTimeout: 10s
-    Metadata:
-      RetryBackoff: 250ms
-      RetryMax: 3
-    Producer:
-      RetryBackoff: 100ms
-      RetryMax: 3
-    Consumer:
-      RetryBackoff: 2s
-  Topic:
-    ReplicationFactor: 1
-  Verbose: false
-  TLS:
-    Enabled: false
-    PrivateKey:
-    Certificate:
-    RootCAs:
-  SASLPlain:
-    Enabled: false
-    User:
-    Password:
-  Version:{{ end }}
 Debug:
   BroadcastTraceDir:
   DeliverTraceDir:
@@ -93,6 +66,7 @@ Consensus:
   WALDir: {{ .OrdererDir Orderer }}/etcdraft/wal
   SnapDir: {{ .OrdererDir Orderer }}/etcdraft/snapshot
   EvictionSuspicion: 10s
+  Type: {{ $w.Consensus.Type }}
 Operations:
   ListenAddress: 0.0.0.0:{{ .OrdererPort Orderer "Operations" }}
   TLS:
@@ -108,8 +82,11 @@ Metrics:
   Provider: {{ .MetricsProvider }}
   Statsd:
     Network: udp
-    Address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}127.0.0.1:8125{{ end }}
+    Address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}0.0.0.0:8125{{ end }}
     WriteInterval: 5s
     Prefix: {{ ReplaceAll (ToLower Orderer.ID) "." "_" }}
 {{- end }}
+ChannelParticipation:
+  Enabled: true
+  MaxRequestBodySize: 100000000
 `

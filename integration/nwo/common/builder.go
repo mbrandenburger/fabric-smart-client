@@ -9,21 +9,16 @@ package common
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
-	"gopkg.in/src-d/go-git.v4"
-	"gopkg.in/src-d/go-git.v4/plumbing"
-
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 )
 
 var logger = flogging.MustGetLogger("nwo.builder")
@@ -38,7 +33,7 @@ func (c *BuilderClient) Build(path string) string {
 	resp, err := http.Get(fmt.Sprintf("http://%s/%s", c.ServerAddress, path))
 	Expect(err).NotTo(HaveOccurred())
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	Expect(err).NotTo(HaveOccurred())
 
 	if resp.StatusCode != http.StatusOK {
@@ -72,10 +67,12 @@ func (s *BuildServer) Serve() {
 	go s.server.Serve(lis)
 }
 
-func (s *BuildServer) Shutdown() {
+func (s *BuildServer) Shutdown(deleteOnStop bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	defer gexec.CleanupBuildArtifacts()
+	if deleteOnStop {
+		defer gexec.CleanupBuildArtifacts()
+	}
 
 	s.server.Shutdown(ctx)
 }
@@ -118,58 +115,13 @@ func (a *artifact) build(args ...string) error {
 }
 
 func (a *artifact) gBuild(input string, args ...string) (string, error) {
-	switch {
-	case strings.HasPrefix(input, "git@"):
-		logger.Infof("building %s", input)
-		// split input in repo#commit#packagePath#cmd
-		entries := strings.Split(input, ";")
-		repo := entries[0]
-		commit := entries[1]
-		packagePath := entries[2]
-		cmd := entries[3]
-
-		testDir, err := ioutil.TempDir("", "fabric")
-		if err != nil {
-			return "", err
-		}
-		logger.Infof("testDir %s", testDir)
-
-		goPath := filepath.Join(testDir, "gopath")
-		logger.Infof("goPath %s", goPath)
-		fabricPath := filepath.Join(testDir, "gopath", "src", packagePath)
-		logger.Infof("fabricPath %s", fabricPath)
-
-		r, err := git.PlainClone(fabricPath, false, &git.CloneOptions{
-			URL:      repo,
-			Progress: os.Stdout,
-		})
-		if err != nil {
-			return "", err
-		}
-		w, err := r.Worktree()
-		if err != nil {
-			return "", err
-		}
-		err = w.Checkout(&git.CheckoutOptions{
-			Hash: plumbing.NewHash(commit),
-		})
-		if err != nil {
-			return "", err
-		}
-		logger.Infof("checked out %s done ", commit)
-
-		logger.Infof("building [%s,%s] ", goPath, packagePath+"/"+cmd)
-
-		return gexec.BuildIn(goPath, packagePath+"/"+cmd)
-	default:
-		if a.raceDetectorEnabled && !strings.HasPrefix(input, "github.com/hyperledger/fabric/") {
-			logger.Infof("building [%s,%s] with race detection ", input, args)
-			return gexec.Build(input, args...)
-		}
-
-		logger.Infof("building [%s,%s] ", input, args)
+	if a.raceDetectorEnabled && !strings.HasPrefix(input, "github.com/hyperledger/fabric/") {
+		logger.Infof("building [%s,%s] with race detection ", input, args)
 		return gexec.Build(input, args...)
 	}
+
+	logger.Infof("building [%s,%s] ", input, args)
+	return gexec.Build(input, args...)
 }
 
 type buildHandler struct {

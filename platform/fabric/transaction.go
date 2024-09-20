@@ -14,17 +14,27 @@ import (
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 )
 
+type TransactionType = driver.TransactionType
+
+const (
+	EndorserTransaction = driver.EndorserTransaction
+)
+
 type TransactionOptions struct {
-	Creator view.Identity
-	Nonce   []byte
-	TxID    string
-	Channel string
+	Creator         view.Identity
+	Nonce           []byte
+	TxID            string
+	Channel         string
+	RawRequest      []byte
+	TransactionType TransactionType
 }
 
 type TransactionOption func(*TransactionOptions) error
 
-func compileTransactionOptions(opts ...TransactionOption) (*TransactionOptions, error) {
-	txOptions := &TransactionOptions{}
+func CompileTransactionOptions(opts ...TransactionOption) (*TransactionOptions, error) {
+	txOptions := &TransactionOptions{
+		TransactionType: EndorserTransaction,
+	}
 	for _, opt := range opts {
 		if err := opt(txOptions); err != nil {
 			return nil, err
@@ -57,6 +67,20 @@ func WithNonce(nonce []byte) TransactionOption {
 func WithTxID(txid string) TransactionOption {
 	return func(o *TransactionOptions) error {
 		o.TxID = txid
+		return nil
+	}
+}
+
+func WithRawRequest(rawRequest []byte) TransactionOption {
+	return func(o *TransactionOptions) error {
+		o.RawRequest = rawRequest
+		return nil
+	}
+}
+
+func WithTransactionType(tt TransactionType) TransactionOption {
+	return func(o *TransactionOptions) error {
+		o.TransactionType = tt
 		return nil
 	}
 }
@@ -96,6 +120,10 @@ func (r *ProposalResponse) EndorserSignature() []byte {
 
 func (r *ProposalResponse) Results() []byte {
 	return r.pr.Results()
+}
+
+func (r *ProposalResponse) Bytes() ([]byte, error) {
+	return r.pr.Bytes()
 }
 
 type Proposal struct {
@@ -228,7 +256,7 @@ func (t *Transaction) SetRWSet() error {
 }
 
 func (t *Transaction) RWS() *RWSet {
-	return &RWSet{rws: t.tx.RWS()}
+	return NewRWSet(t.tx.RWS())
 }
 
 func (t *Transaction) Done() error {
@@ -248,7 +276,7 @@ func (t *Transaction) GetRWSet() (*RWSet, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &RWSet{rws: rws}, nil
+	return NewRWSet(rws), nil
 }
 
 func (t *Transaction) Bytes() ([]byte, error) {
@@ -315,6 +343,14 @@ func (t *Transaction) FabricNetworkService() *NetworkService {
 	return t.fns
 }
 
+func (t *Transaction) Envelope() (*Envelope, error) {
+	env, err := t.tx.Envelope()
+	if err != nil {
+		return nil, err
+	}
+	return &Envelope{e: env}, nil
+}
+
 type TransactionManager struct {
 	fns *NetworkService
 }
@@ -332,7 +368,7 @@ func (t *TransactionManager) NewProposalResponseFromBytes(raw []byte) (*Proposal
 }
 
 func (t *TransactionManager) NewTransaction(opts ...TransactionOption) (*Transaction, error) {
-	options, err := compileTransactionOptions(opts...)
+	options, err := CompileTransactionOptions(opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -341,7 +377,7 @@ func (t *TransactionManager) NewTransaction(opts ...TransactionOption) (*Transac
 		return nil, err
 	}
 
-	tx, err := t.fns.fns.TransactionManager().NewTransaction(options.Creator, options.Nonce, options.TxID, ch.Name())
+	tx, err := t.fns.fns.TransactionManager().NewTransaction(driver.TransactionType(options.TransactionType), options.Creator, options.Nonce, options.TxID, ch.Name(), options.RawRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +389,7 @@ func (t *TransactionManager) NewTransaction(opts ...TransactionOption) (*Transac
 }
 
 func (t *TransactionManager) NewTransactionFromBytes(raw []byte, opts ...TransactionOption) (*Transaction, error) {
-	options, err := compileTransactionOptions(opts...)
+	options, err := CompileTransactionOptions(opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +399,27 @@ func (t *TransactionManager) NewTransactionFromBytes(raw []byte, opts ...Transac
 	}
 
 	tx, err := t.fns.fns.TransactionManager().NewTransactionFromBytes(ch.Name(), raw)
+	if err != nil {
+		return nil, err
+	}
+
+	return &Transaction{
+		fns: t.fns,
+		tx:  tx,
+	}, nil
+}
+
+func (t *TransactionManager) NewTransactionFromEnvelopeBytes(raw []byte, opts ...TransactionOption) (*Transaction, error) {
+	options, err := CompileTransactionOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
+	ch, err := t.fns.Channel(options.Channel)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := t.fns.fns.TransactionManager().NewTransactionFromEnvelopeBytes(ch.Name(), raw)
 	if err != nil {
 		return nil, err
 	}
@@ -401,4 +458,12 @@ func (m *MetadataService) LoadTransient(txid string) (TransientMap, error) {
 		return nil, err
 	}
 	return TransientMap(res), nil
+}
+
+type EnvelopeService struct {
+	ms driver.EnvelopeService
+}
+
+func (m *EnvelopeService) Exists(txid string) bool {
+	return m.ms.Exists(txid)
 }

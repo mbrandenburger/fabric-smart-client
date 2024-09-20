@@ -7,86 +7,147 @@ SPDX-License-Identifier: Apache-2.0
 package web
 
 import (
+	"context"
 	"encoding/json"
-	"log"
-
-	"github.com/pkg/errors"
+	"net/http"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
-	protos2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/server/view/protos"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracker"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/server/view/protos"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracing"
+	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/trace"
 )
 
+const (
+	vidLabel tracing.LabelName = "vid"
+)
+
+type viewCallFunc func(context *ReqContext, vid string, input []byte) (interface{}, error)
+
+func (vcf viewCallFunc) CallView(context *ReqContext, vid string, input []byte) (interface{}, error) {
+	return vcf(context, vid, input)
+}
+
 type viewHandler struct {
-	logger logger
-	sp     view.ServiceProvider
+	c *client
 }
 
-type viewCallFunc func(fid string, input []byte) (interface{}, error)
-
-func (vcf viewCallFunc) CallView(fid string, input []byte) (interface{}, error) {
-	return vcf(fid, input)
-}
-
-type dispatcher interface {
-	WireViewCaller(vc ViewCaller)
-}
-
-func InstallViewHandler(l logger, sp view.ServiceProvider, d dispatcher) {
-	fh := &viewHandler{logger: l, sp: sp}
-	d.WireViewCaller(viewCallFunc(fh.callView))
-}
-
-func (s *viewHandler) callView(fid string, input []byte) (interface{}, error) {
-	s.logger.Debugf("Call view [%s] on input [%v]", fid, string(input))
-
-	viewManager := view.GetManager(s.sp)
-	f, err := viewManager.NewView(fid, input)
+func (s *viewHandler) CallView(context *ReqContext, vid string, input []byte) (interface{}, error) {
+	result, err := s.c.CallView(vid, input, context.Req.Context())
 	if err != nil {
-		return nil, errors.Errorf("failed instantiating view [%s], err [%s]", fid, err)
-	}
-	result, err := viewManager.InitiateView(f)
-	if err != nil {
-		return nil, errors.Errorf("failed running view [%s], err %s", fid, err)
+		return nil, errors.Errorf("failed running view [%s], err %s", vid, err)
 	}
 	raw, ok := result.([]byte)
 	if !ok {
 		raw, err = json.Marshal(result)
 		if err != nil {
-			return nil, errors.Errorf("failed marshalling result produced by view [%s], err [%s]", fid, err)
+			return nil, errors.Errorf("failed marshalling result produced by view [%s], err [%s]", vid, err)
 		}
 	}
-	s.logger.Debugf("Finished call view [%s] on input [%v]", fid, string(input))
-	return &protos2.CommandResponse_CallViewResponse{CallViewResponse: &protos2.CallViewResponse{
+	return &protos.CommandResponse_CallViewResponse{CallViewResponse: &protos.CallViewResponse{
 		Result: raw,
 	}}, nil
 }
 
-func (s *viewHandler) RunView(manager *view.Manager, view view.View) (string, error) {
-	context, err := manager.InitiateContext(view)
-	if err != nil {
-		return "", err
-	}
-
-	// Get the tracker
-	viewTracker, err := tracker.GetViewTracker(s.sp)
-	if err != nil {
-		return "", err
-	}
-
-	// Run the view
-	go s.runViewWithTracking(view, context, viewTracker)
-
-	return context.ID(), nil
+func (s *viewHandler) StreamCallView(context *ReqContext, vid string, input []byte) (interface{}, error) {
+	return nil, s.c.StreamCallView(vid, context.ResponseWriter, context.Req)
 }
 
-func (s *viewHandler) runViewWithTracking(view view.View, context *view.Context, tracker tracker.ViewTracker) {
-	result, err := context.RunView(view)
-	if err != nil {
-		log.Printf("Failed view execution. Err [%s]\n", err)
-		tracker.Error(err)
-	} else {
-		log.Printf("Successful view execution. Result [%s]\n", result)
-		tracker.Done(result)
+func InstallViewHandler(l logger, viewManager *view.Manager, h *HttpHandler, tp trace.TracerProvider) {
+	fh := &viewHandler{c: newViewClient(l, viewManager, tp)}
+
+	newDispatcher(h).WireViewCaller(viewCallFunc(fh.CallView))
+
+	newDispatcher(h).WireStreamViewCaller(viewCallFunc(fh.StreamCallView))
+}
+
+type ViewClient interface {
+	StreamCallView(fid string, writer http.ResponseWriter, request *http.Request) error
+	CallView(fid string, in []byte, ctx context.Context) (interface{}, error)
+}
+
+type client struct {
+	logger
+	viewManager *view.Manager
+	tracer      trace.Tracer
+}
+
+func newViewClient(logger logger, viewManager *view.Manager, tp trace.TracerProvider) *client {
+	return &client{
+		logger:      logger,
+		viewManager: viewManager,
+		tracer: tp.Tracer("view_client", tracing.WithMetricsOpts(tracing.MetricsOpts{
+			Namespace:  "viewsdk",
+			LabelNames: []tracing.LabelName{vidLabel},
+		})),
 	}
+}
+
+func (s *client) CallView(vid string, input []byte, ctx context.Context) (interface{}, error) {
+	newCtx, span := s.tracer.Start(ctx, "call_view",
+		tracing.WithAttributes(tracing.String(vidLabel, vid)),
+		trace.WithSpanKind(trace.SpanKindClient))
+	defer span.End()
+	s.logger.Debugf("Call view [%s] on input [%v]", vid, string(input))
+
+	span.AddEvent("new_view")
+	f, err := s.viewManager.NewView(vid, input)
+	if err != nil {
+		return nil, errors.Errorf("failed instantiating view [%s], err [%s]", vid, err)
+	}
+	span.AddEvent("initiate_view")
+	raw, err := s.viewManager.InitiateView(f, newCtx)
+	if err == nil {
+		s.logger.Debugf("Finished call view [%s] on input [%v]", vid, string(input))
+	}
+	return raw, err
+}
+
+func (s *client) StreamCallView(vid string, writer http.ResponseWriter, request *http.Request) error {
+	s.logger.Debugf("Call view [%s]", vid)
+
+	// we need to retrieve the input to the factory from the web socket
+	stream, err := NewWSStream(s.logger, writer, request)
+	if err != nil {
+		return errors.Wrapf(err, "failed to create web socket")
+	}
+	input, err := stream.ReadInput()
+	if err != nil {
+		return errors.Wrapf(err, "failed to read input")
+	}
+
+	f, err := s.viewManager.NewView(vid, input)
+	if err != nil {
+		return errors.Errorf("failed instantiating view [%s], err [%s]", vid, err)
+	}
+	viewContext, err := s.viewManager.InitiateContext(f)
+	if err != nil {
+		return errors.Errorf("failed instantiating context for view [%s], err %s", vid, err)
+	}
+
+	// register the web socket
+	mutable, ok := viewContext.Context.(view2.MutableContext)
+	if !ok {
+		return errors.Errorf("expected a mutable contexdt")
+	}
+	if err := mutable.PutService(stream); err != nil {
+		return errors.Errorf("failed registering stream command server")
+	}
+	// run the view
+	result, err := viewContext.RunView(f)
+	if err != nil {
+		return errors.Errorf("failed running view [%s], err %s", vid, err)
+	}
+	raw, ok := result.([]byte)
+	if !ok {
+		raw, err = json.Marshal(result)
+		if err != nil {
+			return errors.Errorf("failed marshalling result produced by view [%s], err [%s]", vid, err)
+		}
+	}
+	s.logger.Debugf("Finished call view [%s] on input [%v]", vid, string(input))
+
+	// write back the result
+	return stream.WriteResult(raw)
 }

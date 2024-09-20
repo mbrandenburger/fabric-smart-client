@@ -8,11 +8,15 @@ package network
 
 import (
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/commands"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/fabricconfig"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/replacer"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/topology"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	. "github.com/onsi/gomega"
@@ -32,6 +36,12 @@ type Extension interface {
 	PostRun(load bool)
 }
 
+type Packager interface {
+	PackageChaincode(path, typ, label, outputFile string, replacer replacer.Func) error
+}
+
+type PackagerFactory = func() Packager
+
 type Network struct {
 	Context            api.Context
 	topology           *topology.Topology
@@ -45,7 +55,6 @@ type Network struct {
 	StatsdEndpoint     string
 	ClientAuthRequired bool
 
-	PortsByOrdererID  map[string]api.Ports
 	Logging           *topology.Logging
 	PvtTxSupport      bool
 	PvtTxCCSupport    bool
@@ -65,7 +74,8 @@ type Network struct {
 	Templates         *topology.Templates
 	Resolvers         []*Resolver
 
-	Extensions []Extension
+	Extensions      []Extension
+	PackagerFactory PackagerFactory
 
 	colorIndex uint
 	ccps       []ChaincodeProcessor
@@ -86,7 +96,6 @@ func New(reg api.Context, topology *topology.Topology, builderClient BuilderClie
 		NetworkID:         NetworkID,
 		EventuallyTimeout: 20 * time.Minute,
 		MetricsProvider:   "prometheus",
-		PortsByOrdererID:  map[string]api.Ports{},
 
 		Organizations:     topology.Organizations,
 		Consensus:         topology.Consensus,
@@ -107,6 +116,9 @@ func New(reg api.Context, topology *topology.Topology, builderClient BuilderClie
 		PvtTxCCSupport:    topology.PvtTxCCSupport,
 		ccps:              ccps,
 		Extensions:        []Extension{},
+		PackagerFactory: func() Packager {
+			return packager.New()
+		},
 	}
 	return network
 }
@@ -138,27 +150,14 @@ func (n *Network) GenerateArtifacts() {
 	n.bootstrapIdemix()
 	n.bootstrapExtraIdentities()
 
-	if len(n.SystemChannel.Name) != 0 {
-		sess, err = n.ConfigTxGen(commands.OutputBlock{
-			NetworkPrefix: n.Prefix,
-			ChannelID:     n.SystemChannel.Name,
-			Profile:       n.SystemChannel.Profile,
-			ConfigPath:    filepath.Join(n.Context.RootDir(), n.Prefix),
-			OutputBlock:   n.OutputBlockPath(n.SystemChannel.Name),
-		})
+	if n.SystemChannel != nil && len(n.SystemChannel.Name) != 0 {
+		sess, err = n.ConfigTxGen(n.systemChannelParams(n.SystemChannel))
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
 	}
 
 	for _, c := range n.Channels {
-		sess, err := n.ConfigTxGen(commands.CreateChannelTx{
-			NetworkPrefix:         n.Prefix,
-			ChannelID:             c.Name,
-			Profile:               c.Profile,
-			BaseProfile:           c.BaseProfile,
-			ConfigPath:            filepath.Join(n.Context.RootDir(), n.Prefix),
-			OutputCreateChannelTx: n.CreateChannelTxPath(c.Name),
-		})
+		sess, err = n.ConfigTxGen(n.createChannelConfig(c))
 		Expect(err).NotTo(HaveOccurred())
 		Eventually(sess, n.EventuallyTimeout).Should(gexec.Exit(0))
 	}
@@ -175,6 +174,30 @@ func (n *Network) GenerateArtifacts() {
 	// Extensions
 	for _, extension := range n.Extensions {
 		extension.GenerateArtifacts()
+	}
+}
+
+func (n *Network) createChannelConfig(c *topology.Channel) common.Command {
+	if n.SystemChannel == nil {
+		return n.systemChannelParams(&topology.SystemChannel{Name: c.Name, Profile: c.Profile})
+	}
+	return commands.CreateChannelTx{
+		NetworkPrefix:         n.Prefix,
+		ChannelID:             c.Name,
+		Profile:               c.Profile,
+		BaseProfile:           c.BaseProfile,
+		ConfigPath:            filepath.Join(n.Context.RootDir(), n.Prefix),
+		OutputCreateChannelTx: n.CreateChannelTxPath(c.Name),
+	}
+}
+
+func (n *Network) systemChannelParams(c *topology.SystemChannel) commands.OutputBlock {
+	return commands.OutputBlock{
+		NetworkPrefix: n.Prefix,
+		ChannelID:     c.Name,
+		Profile:       c.Profile,
+		ConfigPath:    filepath.Join(n.Context.RootDir(), n.Prefix),
+		OutputBlock:   n.OutputBlockPath(c.Name),
 	}
 }
 
@@ -235,7 +258,7 @@ func (n *Network) Cleanup() {
 
 func (n *Network) DeployChaincode(chaincode *topology.ChannelChaincode) {
 	orderer := n.Orderer("orderer")
-	peers := n.PeersByName(chaincode.Peers)
+	peers := n.PeersForChaincodeByName(chaincode.Peers)
 
 	if len(chaincode.Chaincode.PackageFile) == 0 {
 		if len(chaincode.Path) != 0 {
@@ -243,7 +266,7 @@ func (n *Network) DeployChaincode(chaincode *topology.ChannelChaincode) {
 			chaincode.Chaincode.Path = chaincodePath
 			chaincode.Chaincode.Lang = "binary"
 		}
-		chaincode.Chaincode.PackageFile = filepath.Join(n.Context.RootDir(), n.Prefix, chaincode.Chaincode.Name+".tar.gz")
+		chaincode.Chaincode.PackageFile = filepath.Join(n.Context.RootDir(), n.Prefix, chaincode.Chaincode.Name+chaincode.Chaincode.Version+".tar.gz")
 	}
 
 	PackageAndInstallChaincode(n, &chaincode.Chaincode, peers...)
@@ -259,8 +282,46 @@ func (n *Network) DeployChaincode(chaincode *topology.ChannelChaincode) {
 	if chaincode.Chaincode.InitRequired {
 		InitChaincode(n, chaincode.Channel, orderer, &chaincode.Chaincode, peers...)
 	}
+	//add new chaincode to the topology
+	n.topology.AddChaincode(chaincode)
 }
 
 func (n *Network) AddExtension(ex Extension) {
 	n.Extensions = append(n.Extensions, ex)
+}
+
+// UpdateChaincode deploys the new version of the chaincode passed by chaincodeId
+func (n *Network) UpdateChaincode(chaincodeId string, version string, path string, packageFile string) {
+	var cc *topology.ChannelChaincode
+	for _, chaincode := range n.topology.Chaincodes {
+		if chaincode.Chaincode.Name == chaincodeId {
+			cc = chaincode
+			break
+		}
+	}
+	Expect(cc).ToNot(BeNil(), "failed to find chaincode [%s]", chaincodeId)
+
+	seq, err := strconv.Atoi(cc.Chaincode.Sequence)
+	Expect(err).NotTo(HaveOccurred(), "failed to parse chaincode sequence [%s]", cc.Chaincode.Sequence)
+
+	newCC := &topology.ChannelChaincode{
+		Chaincode: topology.Chaincode{
+			Name:            cc.Chaincode.Name,
+			Version:         version,
+			Sequence:        strconv.Itoa(seq + 1),
+			InitRequired:    cc.Chaincode.InitRequired,
+			Path:            path,
+			Lang:            cc.Chaincode.Lang,
+			Label:           cc.Chaincode.Name,
+			Ctor:            cc.Chaincode.Ctor,
+			Policy:          cc.Chaincode.Policy,
+			SignaturePolicy: cc.Chaincode.SignaturePolicy,
+		},
+		Channel: cc.Channel,
+		Peers:   cc.Peers,
+	}
+	if len(packageFile) != 0 {
+		newCC.Chaincode.PackageFile = packageFile
+	}
+	n.DeployChaincode(newCC)
 }

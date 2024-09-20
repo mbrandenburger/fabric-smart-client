@@ -7,23 +7,15 @@ SPDX-License-Identifier: Apache-2.0
 package view
 
 import (
+	"context"
+
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 )
 
 // Context gives a view information about the environment in which it is in execution
 type Context struct {
-	c view.Context
-}
-
-// RunView runs the passed view on input this context
-func (c *Context) RunView(f View) (interface{}, error) {
-	return c.c.RunView(f)
-}
-
-// ID returns the identifier of this context
-func (c *Context) ID() string {
-	return c.c.ID()
+	view.Context
 }
 
 // Manager manages the lifecycle of views and contexts
@@ -43,12 +35,12 @@ func (m *Manager) Context(contextID string) (*Context, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Context{c: context}, nil
+	return &Context{Context: context}, nil
 }
 
 // InitiateView invokes the passed view and returns the result produced by that view
-func (m *Manager) InitiateView(view View) (interface{}, error) {
-	return m.m.InitiateView(view)
+func (m *Manager) InitiateView(view View, ctx context.Context) (interface{}, error) {
+	return m.m.InitiateView(view, ctx)
 }
 
 // InitiateContext initiates a new context for the passed view
@@ -57,11 +49,24 @@ func (m *Manager) InitiateContext(view View) (*Context, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Context{c: context}, nil
+	return &Context{Context: context}, nil
+}
+
+// InitiateContextWithIdentityAndID initiates
+func (m *Manager) InitiateContextWithIdentityAndID(view View, id view.Identity, contextID string) (view.Context, error) {
+	context, err := m.m.InitiateContextWithIdentityAndID(view, id, contextID)
+	if err != nil {
+		return nil, err
+	}
+	return context, nil
 }
 
 // GetManager returns an instance of the view manager.
 // It panics, if no instance is found.
 func GetManager(sp ServiceProvider) *Manager {
-	return &Manager{m: driver.GetViewManager(sp)}
+	return NewManager(driver.GetViewManager(sp))
+}
+
+func NewManager(m driver.ViewManager) *Manager {
+	return &Manager{m: m}
 }

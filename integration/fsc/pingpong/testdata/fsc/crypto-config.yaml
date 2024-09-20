@@ -5,20 +5,22 @@ PeerOrgs:
   EnableNodeOUs: false
   Users:
     Count: 4
-    Names: 
-    - initiator
-    - responder
-    - User1
-    - User2
+    Specs: 
+    - Name: initiator
+    - Name: responder
+    - Name: User1
+    - Name: User2
 
   Specs:
   - Hostname: initiator
     SANS:
+    - 0.0.0.0
     - localhost
     - 127.0.0.1
     - ::1
   - Hostname: responder
     SANS:
+    - 0.0.0.0
     - localhost
     - 127.0.0.1
     - ::1

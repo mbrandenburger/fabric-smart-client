@@ -7,9 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 package transaction
 
 import (
+	"encoding/json"
+
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/driver"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/orion-server/pkg/types"
 	"github.com/pkg/errors"
 )
@@ -57,13 +58,20 @@ func (e *Envelope) FromBytes(raw []byte) error {
 	return nil
 }
 
+func (e *Envelope) String() string {
+	s, err := json.MarshalIndent(e.env, "", "  ")
+	if err != nil {
+		return err.Error()
+	}
+	return string(s)
+}
+
 type Manager struct {
-	sp view.ServiceProvider
 	sm driver.SessionManager
 }
 
-func NewManager(sp view.ServiceProvider, sm driver.SessionManager) *Manager {
-	return &Manager{sp: sp, sm: sm}
+func NewManager(sm driver.SessionManager) *Manager {
+	return &Manager{sm: sm}
 }
 
 func (m *Manager) ComputeTxID(id *driver.TxID) string {

@@ -7,19 +7,19 @@ SPDX-License-Identifier: Apache-2.0
 package comm
 
 import (
+	"context"
 	"encoding/base64"
 	"strings"
 
-	"go.uber.org/zap/zapcore"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"go.uber.org/zap/zapcore"
 )
 
 func (p *P2PNode) getOrCreateSession(sessionID, endpointAddress, contextID, callerViewID string, caller view.Identity, endpointID []byte, msg *view.Message) (*NetworkStreamSession, error) {
 	p.sessionsMutex.Lock()
 	defer p.sessionsMutex.Unlock()
 
-	internalSessionID := computeInternalSessionID(sessionID, endpointAddress, endpointID)
+	internalSessionID := computeInternalSessionID(sessionID, endpointID)
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
 		logger.Debugf("looking up session [%s]", internalSessionID)
 	}
@@ -59,6 +59,7 @@ func (p *P2PNode) getOrCreateSession(sessionID, endpointAddress, contextID, call
 	}
 
 	p.sessions[internalSessionID] = s
+	p.m.Sessions.Set(float64(len(p.sessions)))
 
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
 		logger.Debugf("session [%s] as internal session [%s] ready", sessionID, internalSessionID)
@@ -86,17 +87,19 @@ func (p *P2PNode) MasterSession() (view.Session, error) {
 	return p.getOrCreateSession(masterSession, "", "", "", nil, []byte{}, nil)
 }
 
-func (p *P2PNode) DeleteSessions(sessionID string) {
+func (p *P2PNode) DeleteSessions(_ context.Context, sessionID string) {
 	p.sessionsMutex.Lock()
 	defer p.sessionsMutex.Unlock()
 
-	for key := range p.sessions {
+	for key, session := range p.sessions {
 		// if key starts with sessionID, delete it
 		if strings.HasPrefix(key, sessionID) {
 			if logger.IsEnabledFor(zapcore.DebugLevel) {
 				logger.Debugf("deleting session [%s]", key)
 			}
+			session.closeInternal()
 			delete(p.sessions, key)
 		}
 	}
+	p.m.Sessions.Set(float64(len(p.sessions)))
 }

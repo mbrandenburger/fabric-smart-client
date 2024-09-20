@@ -9,15 +9,13 @@ package endorser
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"time"
-
-	"github.com/pkg/errors"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracker"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type collectEndorsementsView struct {
@@ -28,12 +26,7 @@ type collectEndorsementsView struct {
 }
 
 func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error) {
-	tracker, err := tracker.GetViewTracker(context)
-	if err != nil {
-		return nil, err
-	}
-	tracker.Report("collectEndorsementsView: Marshall State")
-
+	span := trace.SpanFromContext(context.Context())
 	// Prepare verifiers
 	ch, err := c.tx.FabricNetworkService().Channel(c.tx.Channel())
 	if err != nil {
@@ -54,6 +47,7 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 
 	// Contact sequantially all parties.
 	for _, party := range c.parties {
+		span.AddEvent("start_collect_endorsement")
 		logger.Debugf("Collect Endorsements On Simulation from [%s]", party)
 
 		if context.IsMe(party) {
@@ -79,7 +73,6 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 			}
 		}
 
-		tracker.Report(fmt.Sprintf("collectEndorsementsView: collect signature from %s", party))
 		session, err := context.GetSession(context.Initiator(), party)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed getting session")
@@ -89,7 +82,8 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 		ch := session.Receive()
 
 		// Send transaction
-		err = session.Send(txRaw)
+		span.AddEvent("send_tx")
+		err = session.SendWithContext(context.Context(), txRaw)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed sending transaction content")
 		}
@@ -101,11 +95,11 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 		select {
 		case msg = <-ch:
 			timeout.Stop()
-			tracker.Report(fmt.Sprintf("collectEndorsementsView: reply received from [%s]", party))
 		case <-timeout.C:
 			timeout.Stop()
 			return nil, errors.Errorf("Timeout from party %s", party)
 		}
+		span.AddEvent("receive_tx")
 		if msg.Status == view.ERROR {
 			return nil, errors.New(string(msg.Payload))
 		}
@@ -117,9 +111,9 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 		}
 
 		found := false
-		fns := fabric.GetFabricNetworkService(context, c.tx.Network())
-		if fns == nil {
-			return nil, errors.Errorf("fabric network service [%s] not found", c.tx.Network())
+		fns, err := fabric.GetFabricNetworkService(context, c.tx.Network())
+		if err != nil {
+			return nil, errors.WithMessagef(err, "fabric network service [%s] not found", c.tx.Network())
 		}
 		tm := fns.TransactionManager()
 		for _, response := range responses {
@@ -138,6 +132,7 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 			// check the verifier providers, if any
 			verified := false
 			for _, provider := range vProviders {
+				span.AddEvent("verify_endorsement")
 				if v, err := provider.GetVerifier(endorser); err == nil {
 					if err := v.Verify(append(proposalResponse.Payload(), endorser...), proposalResponse.EndorserSignature()); err == nil {
 						verified = true
@@ -163,10 +158,7 @@ func (c *collectEndorsementsView) Call(context view.Context) (interface{}, error
 		if !found {
 			return nil, errors.Errorf("invalid endorsement, expected one signed by [%s]", party.String())
 		}
-
-		tracker.Report(fmt.Sprintf("collectEndorsementsView: collected signature from %s", party))
 	}
-	tracker.Report("collectEndorsementsView done.")
 	return c.tx, nil
 }
 
@@ -190,9 +182,9 @@ type endorseView struct {
 
 func (s *endorseView) Call(context view.Context) (interface{}, error) {
 	if len(s.identities) == 0 {
-		fns := fabric.GetFabricNetworkService(context, s.tx.Network())
-		if fns == nil {
-			return nil, errors.Errorf("fabric network service [%s] not found", s.tx.Network())
+		fns, err := fabric.GetFabricNetworkService(context, s.tx.Network())
+		if err != nil {
+			return nil, errors.WithMessagef(err, "fabric network service [%s] not found", s.tx.Network())
 		}
 		s.identities = []view.Identity{fns.IdentityProvider().DefaultIdentity()}
 	}
@@ -215,7 +207,11 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 	if err != nil {
 		return nil, errors.Wrap(err, "failed marshalling tx")
 	}
-	ch, err := fabric.GetDefaultFNS(context).Channel(s.tx.Channel())
+	fns, err := fabric.GetDefaultFNS(context)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed getting default network")
+	}
+	ch, err := fns.Channel(s.tx.Channel())
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed getting channel [%s]", s.tx.Channel())
 	}
@@ -230,7 +226,7 @@ func (s *endorseView) Call(context view.Context) (interface{}, error) {
 		return nil, err
 	}
 
-	err = context.Session().Send(raw)
+	err = context.Session().SendWithContext(context.Context(), raw)
 	if err != nil {
 		return nil, err
 	}

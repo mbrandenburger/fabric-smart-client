@@ -7,293 +7,206 @@ SPDX-License-Identifier: Apache-2.0
 package vault
 
 import (
-	"bytes"
-	"sync"
-
+	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/core/generic/vault"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/core/generic/vault/txidstore"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/driver"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils/collections"
 	fdriver "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
+	"github.com/hyperledger/fabric-protos-go/ledger/rwset/kvrwset"
+	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	"github.com/pkg/errors"
-	"go.uber.org/atomic"
+	"go.opentelemetry.io/otel/trace"
 )
 
-var logger = flogging.MustGetLogger("fabric-sdk.vault")
+type (
+	TXIDStore       = vault.TXIDStore[fdriver.ValidationCode]
+	Vault           = vault.Vault[fdriver.ValidationCode]
+	TXIDStoreReader = vault.TXIDStoreReader[fdriver.ValidationCode]
+	SimpleTXIDStore = txidstore.SimpleTXIDStore[fdriver.ValidationCode]
+)
 
-type TXIDStoreReader interface {
-	Get(txid string) (fdriver.ValidationCode, error)
+// NewTXIDStore returns a new instance of SimpleTXIDStore
+func NewTXIDStore(persistence txidstore.UnversionedPersistence) (*SimpleTXIDStore, error) {
+	return txidstore.NewSimpleTXIDStore[fdriver.ValidationCode](
+		persistence,
+		&fdriver.ValidationCodeProvider{},
+	)
 }
 
-type TXIDStore interface {
-	TXIDStoreReader
-	Set(txid string, code fdriver.ValidationCode) error
+// NewVault returns a new instance of Vault
+func NewVault(store vault.VersionedPersistence, txIDStore TXIDStore, tracerProvider trace.TracerProvider) *Vault {
+	return vault.New[fdriver.ValidationCode](
+		flogging.MustGetLogger("fabric-sdk.generic.vault"),
+		store,
+		txIDStore,
+		&fdriver.ValidationCodeProvider{},
+		newInterceptor,
+		&populator{},
+		tracerProvider,
+	)
 }
 
-// Vault models a key-value store that can be modified by committing rwsets
-type Vault struct {
-	txidStore        TXIDStore
-	interceptorsLock sync.RWMutex
-	interceptors     map[string]*Interceptor
-	counter          atomic.Int32
-
-	// the vault handles access concurrency to the store using storeLock.
-	// In particular:
-	// * when a directQueryExecutor is returned, it holds a read-lock;
-	//   when Done is called on it, the lock is released.
-	// * when an interceptor is returned (using NewRWSet (in case the
-	//   transaction context is generated from nothing) or GetRWSet
-	//   (in case the transaction context is received from another node)),
-	//   it holds a read-lock; when Done is called on it, the lock is released.
-	// * an exclusive lock is held when Commit is called.
-	store     driver.VersionedPersistence
-	storeLock sync.RWMutex
+func newInterceptor(logger vault.Logger, qe vault.VersionedQueryExecutor, txIDStore TXIDStoreReader, txID string) vault.TxInterceptor {
+	return vault.NewInterceptor[fdriver.ValidationCode](
+		logger,
+		qe,
+		txIDStore,
+		txID,
+		&fdriver.ValidationCodeProvider{},
+		&marshaller{},
+	)
 }
 
-// New returns a new instance of Vault
-func New(store driver.VersionedPersistence, txIDStore TXIDStore) *Vault {
-	return &Vault{
-		interceptors: make(map[string]*Interceptor),
-		store:        store,
-		txidStore:    txIDStore,
-	}
-}
+type populator struct{}
 
-func (db *Vault) NewQueryExecutor() (fdriver.QueryExecutor, error) {
-	logger.Debugf("getting lock for query executor")
-	db.counter.Inc()
-	db.storeLock.RLock()
-
-	logger.Debugf("return new query executor")
-	return &directQueryExecutor{
-		vault: db,
-	}, nil
-}
-
-func (db *Vault) unmapInterceptor(txid string) (*Interceptor, error) {
-	db.interceptorsLock.Lock()
-	defer db.interceptorsLock.Unlock()
-
-	i, in := db.interceptors[txid]
-
-	if !in {
-		return nil, errors.Errorf("read-write set for txid %s could not be found", txid)
-	}
-
-	if !i.closed {
-		return nil, errors.Errorf("attempted to retrieve read-write set for %s when done has not been called", txid)
-	}
-
-	delete(db.interceptors, txid)
-
-	return i, nil
-}
-
-func (db *Vault) Status(txid string) (fdriver.ValidationCode, error) {
-	code, err := db.txidStore.Get(txid)
+func (p *populator) Populate(rws *vault.ReadWriteSet, rwsetBytes []byte, namespaces ...driver.Namespace) error {
+	txRWSet := &rwset.TxReadWriteSet{}
+	err := proto.Unmarshal(rwsetBytes, txRWSet)
 	if err != nil {
-		return 0, nil
+		return errors.Wrapf(err, "provided invalid read-write set bytes, unmarshal failed")
 	}
 
-	if code != fdriver.Unknown {
-		return code, nil
-	}
-
-	db.interceptorsLock.RLock()
-	defer db.interceptorsLock.RUnlock()
-
-	if _, in := db.interceptors[txid]; in {
-		return fdriver.Busy, nil
-	}
-
-	return fdriver.Unknown, nil
-}
-
-func (db *Vault) DiscardTx(txid string) error {
-	_, err := db.unmapInterceptor(txid)
+	rwsIn, err := rwsetutil.TxRwSetFromProtoMsg(txRWSet)
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "provided invalid read-write set bytes, TxRwSetFromProtoMsg failed")
 	}
 
-	err = db.store.BeginUpdate()
-	if err != nil {
-		return errors.WithMessagef(err, "begin update for txid '%s' failed", txid)
-	}
+	namespaceSet := collections.NewSet(namespaces...)
+	for _, nsrws := range rwsIn.NsRwSets {
+		ns := nsrws.NameSpace
 
-	err = db.txidStore.Set(txid, fdriver.Invalid)
-	if err != nil {
-		return err
-	}
+		// skip if not in the list of namespaces
+		if !namespaceSet.Empty() && !namespaceSet.Contains(ns) {
+			continue
+		}
 
-	err = db.store.Commit()
-	if err != nil {
-		return errors.WithMessagef(err, "committing tx for txid '%s' failed", txid)
+		for _, read := range nsrws.KvRwSet.Reads {
+			bn := driver.BlockNum(0)
+			txn := driver.TxNum(0)
+			if read.Version != nil {
+				bn = read.Version.BlockNum
+				txn = read.Version.TxNum
+			}
+			rws.ReadSet.Add(ns, read.Key, bn, txn)
+		}
+
+		for _, write := range nsrws.KvRwSet.Writes {
+			if err := rws.WriteSet.Add(ns, write.Key, write.Value); err != nil {
+				return err
+			}
+		}
+
+		for _, metaWrite := range nsrws.KvRwSet.MetadataWrites {
+			metadata := map[string][]byte{}
+			for _, entry := range metaWrite.Entries {
+				metadata[entry.Name] = append([]byte(nil), entry.Value...)
+			}
+
+			if err := rws.MetaWriteSet.Add(ns, metaWrite.Key, metadata); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
 }
 
-func (db *Vault) CommitTX(txid string, block uint64, indexInBloc int) error {
-	logger.Debugf("unmapInterceptor [%s]", txid)
-	i, err := db.unmapInterceptor(txid)
-	if err != nil {
-		return err
-	}
+type marshaller struct{}
 
-	logger.Debugf("get lock [%s][%d]", txid, db.counter.Load())
-	db.storeLock.Lock()
-	defer db.storeLock.Unlock()
+func (m *marshaller) Marshal(rws *vault.ReadWriteSet) ([]byte, error) {
+	rwsb := rwsetutil.NewRWSetBuilder()
 
-	err = db.store.BeginUpdate()
-	if err != nil {
-		return errors.WithMessagef(err, "begin update for txid '%s' failed", txid)
-	}
-
-	logger.Debugf("parse writes [%s]", txid)
-	for ns, keyMap := range i.rws.writes {
+	for ns, keyMap := range rws.Reads {
 		for key, v := range keyMap {
-			logger.Debugf("store write [%s,%s,%v]", ns, key, hash.Hashable(v).String())
-			var err error
-			if len(v) != 0 {
-				err = db.store.SetState(ns, key, v, block, uint64(indexInBloc))
+			if v.Block != 0 || v.TxNum != 0 {
+				rwsb.AddToReadSet(ns, key, rwsetutil.NewVersion(&kvrwset.Version{BlockNum: v.Block, TxNum: v.TxNum}))
 			} else {
-				err = db.store.DeleteState(ns, key)
-			}
-
-			if err != nil {
-				if err1 := db.store.Discard(); err1 != nil {
-					logger.Errorf("got error %s; discarding caused %s", err.Error(), err1.Error())
-				}
-
-				return errors.Errorf("failed to commit operation on %s:%s at height %d:%d", ns, key, block, indexInBloc)
+				rwsb.AddToReadSet(ns, key, nil)
 			}
 		}
 	}
-
-	logger.Debugf("parse meta writes [%s]", txid)
-	for ns, keyMap := range i.rws.metawrites {
+	for ns, keyMap := range rws.Writes {
 		for key, v := range keyMap {
-			logger.Debugf("store meta write [%s,%s]", ns, key)
+			rwsb.AddToWriteSet(ns, key, v)
+		}
+	}
+	for ns, keyMap := range rws.MetaWrites {
+		for key, v := range keyMap {
+			rwsb.AddToMetadataWriteSet(ns, key, v)
+		}
+	}
 
-			err := db.store.SetStateMetadata(ns, key, v, block, uint64(indexInBloc))
-			if err != nil {
-				if err1 := db.store.Discard(); err1 != nil {
-					logger.Errorf("got error %s; discarding caused %s", err.Error(), err1.Error())
-				}
+	simRes, err := rwsb.GetTxSimulationResults()
+	if err != nil {
+		return nil, err
+	}
 
-				return errors.Errorf("failed to commit metadata operation on %s:%s at height %d:%d", ns, key, block, indexInBloc)
+	return simRes.GetPubSimulationBytes()
+}
+
+func (m *marshaller) Append(destination *vault.ReadWriteSet, raw []byte, nss ...string) error {
+	txRWSet := &rwset.TxReadWriteSet{}
+	err := proto.Unmarshal(raw, txRWSet)
+	if err != nil {
+		return errors.Wrap(err, "provided invalid read-write set bytes, unmarshal failed")
+	}
+
+	source, err := rwsetutil.TxRwSetFromProtoMsg(txRWSet)
+	if err != nil {
+		return errors.Wrap(err, "provided invalid read-write set bytes, TxRwSetFromProtoMsg failed")
+	}
+
+	namespaces := collections.NewSet(nss...)
+	for _, nsrws := range source.NsRwSets {
+		ns := nsrws.NameSpace
+		if len(nss) != 0 && !namespaces.Contains(ns) {
+			continue
+		}
+
+		for _, read := range nsrws.KvRwSet.Reads {
+			bnum := fdriver.BlockNum(0)
+			txnum := fdriver.TxNum(0)
+			if read.Version != nil {
+				bnum = read.Version.BlockNum
+				txnum = read.Version.TxNum
+			}
+
+			b, t, in := destination.ReadSet.Get(ns, read.Key)
+			if in && (b != bnum || t != txnum) {
+				return errors.Errorf("invalid read [%s:%s]: previous value returned at version %d:%d, current value at version %d:%d", ns, read.Key, b, t, b, txnum)
+			}
+
+			destination.ReadSet.Add(ns, read.Key, bnum, txnum)
+		}
+
+		for _, write := range nsrws.KvRwSet.Writes {
+			if destination.WriteSet.In(ns, write.Key) {
+				return errors.Errorf("duplicate write entry for key %s:%s", ns, write.Key)
+			}
+
+			if err := destination.WriteSet.Add(ns, write.Key, write.Value); err != nil {
+				return err
+			}
+		}
+
+		for _, metaWrite := range nsrws.KvRwSet.MetadataWrites {
+			if destination.MetaWriteSet.In(ns, metaWrite.Key) {
+				return errors.Errorf("duplicate metadata write entry for key %s:%s", ns, metaWrite.Key)
+			}
+
+			metadata := map[string][]byte{}
+			for _, entry := range metaWrite.Entries {
+				metadata[entry.Name] = append([]byte(nil), entry.Value...)
+			}
+
+			if err := destination.MetaWriteSet.Add(ns, metaWrite.Key, metadata); err != nil {
+				return err
 			}
 		}
 	}
 
-	logger.Debugf("set state to valid [%s]", txid)
-	err = db.txidStore.Set(txid, fdriver.Valid)
-	if err != nil {
-		if err1 := db.store.Discard(); err1 != nil {
-			logger.Errorf("got error %s; discarding caused %s", err.Error(), err1.Error())
-		}
-
-		return err
-	}
-
-	err = db.store.Commit()
-	if err != nil {
-		return errors.WithMessagef(err, "committing tx for txid '%s' failed", txid)
-	}
-
 	return nil
-}
-
-func (db *Vault) NewRWSet(txid string) (*Interceptor, error) {
-	logger.Debugf("NewRWSet[%s][%d]", txid, db.counter.Load())
-	i := newInterceptor(&interceptorQueryExecutor{db}, db.txidStore, txid)
-
-	db.interceptorsLock.Lock()
-	if _, in := db.interceptors[txid]; in {
-		db.interceptorsLock.Unlock()
-		return nil, errors.Errorf("duplicate read-write set for txid %s", txid)
-	}
-	db.interceptors[txid] = i
-	db.interceptorsLock.Unlock()
-
-	db.counter.Inc()
-	db.storeLock.RLock()
-
-	return i, nil
-}
-
-func (db *Vault) GetRWSet(txid string, rwsetBytes []byte) (*Interceptor, error) {
-	logger.Debugf("GetRWSet[%s][%d]", txid, db.counter.Load())
-	i := newInterceptor(&interceptorQueryExecutor{db}, db.txidStore, txid)
-
-	if err := i.rws.populate(rwsetBytes, txid); err != nil {
-		return nil, err
-	}
-
-	db.interceptorsLock.Lock()
-	if i, in := db.interceptors[txid]; in {
-		if !i.closed {
-			db.interceptorsLock.Unlock()
-			return nil, errors.Errorf("programming error: previous read-write set for %s has not been closed", txid)
-		}
-	}
-	db.interceptors[txid] = i
-	db.interceptorsLock.Unlock()
-
-	db.counter.Inc()
-	db.storeLock.RLock()
-
-	return i, nil
-}
-
-func (db *Vault) InspectRWSet(rwsetBytes []byte, namespaces ...string) (*Inspector, error) {
-	i := newInspector()
-
-	if err := i.rws.populate(rwsetBytes, "ephemeral", namespaces...); err != nil {
-		return nil, err
-	}
-
-	return i, nil
-}
-
-func (db *Vault) Match(txid string, rwsRaw []byte) error {
-	if len(rwsRaw) == 0 {
-		return errors.Errorf("passed empty rwset")
-	}
-
-	logger.Debugf("unmapInterceptor [%s]", txid)
-	db.interceptorsLock.RLock()
-	defer db.interceptorsLock.RUnlock()
-	i, in := db.interceptors[txid]
-	if !in {
-		return errors.Errorf("read-write set for txid %s could not be found", txid)
-	}
-	if !i.closed {
-		return errors.Errorf("attempted to retrieve read-write set for %s when done has not been called", txid)
-	}
-
-	logger.Debugf("get lock [%s][%d]", txid, db.counter.Load())
-	db.storeLock.Lock()
-	defer db.storeLock.Unlock()
-
-	rwsRaw2, err := i.Bytes()
-	if err != nil {
-		return err
-	}
-
-	if !bytes.Equal(rwsRaw, rwsRaw2) {
-		target, err := db.InspectRWSet(rwsRaw)
-		if err != nil {
-			return errors.Wrapf(err, "rwsets do not match")
-		}
-		if err2 := i.Equals(target); err2 != nil {
-			return errors.Wrapf(err2, "rwsets do not match")
-		}
-		// TODO: vault should support Fabric's rwset fully
-		logger.Debugf("byte representation differs, but rwsets match [%s]", txid)
-	}
-	return nil
-}
-
-func (db *Vault) Close() error {
-	return db.store.Close()
 }

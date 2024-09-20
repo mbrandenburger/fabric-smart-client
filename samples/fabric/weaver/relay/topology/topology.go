@@ -7,10 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 package topology
 
 import (
+	"os"
+
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/weaver"
+	fabricsdk "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/sdk/dig"
 	"github.com/hyperledger-labs/fabric-smart-client/samples/fabric/weaver/relay/views"
 )
 
@@ -38,6 +41,9 @@ func Topology() []api.Topology {
 
 	// Define an FSC topology with 2 FCS nodes.
 	fscTopology := fsc.NewTopology()
+	if p2pCommunicationType := os.Getenv("FSC_P2P_COMMUNICATION_TYPE"); len(p2pCommunicationType) > 0 {
+		fscTopology.P2PCommunicationType = p2pCommunicationType
+	}
 
 	// Add alice's FSC node
 	alice := fscTopology.AddNodeByName("alice")
@@ -58,6 +64,9 @@ func Topology() []api.Topology {
 	bob.RegisterViewFactory("put", &views.LocalPutViewFactory{})
 	bob.RegisterViewFactory("get", &views.LocalGetViewFactory{})
 	bob.RegisterViewFactory("remoteGet", &views.RemoteGetViewFactory{})
+
+	// Add Fabric SDK to FSC Nodes
+	fscTopology.AddSDK(&fabricsdk.SDK{})
 
 	return []api.Topology{f1Topology, f2Topology, wTopology, fscTopology}
 }

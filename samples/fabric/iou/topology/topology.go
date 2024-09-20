@@ -7,9 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 package topology
 
 import (
+	"os"
+
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring"
+	fabricsdk "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/sdk/dig"
 	"github.com/hyperledger-labs/fabric-smart-client/samples/fabric/iou/views"
 )
 
@@ -29,7 +33,10 @@ func Topology() []api.Topology {
 	// Define an FSC topology with 3 FCS nodes.
 	// One for the approver, one for the borrower, and one for the lender.
 	fscTopology := fsc.NewTopology()
-	fscTopology.SetLogging("debug", "")
+	if p2pCommunicationType := os.Getenv("FSC_P2P_COMMUNICATION_TYPE"); len(p2pCommunicationType) > 0 {
+		fscTopology.P2PCommunicationType = p2pCommunicationType
+	}
+	fscTopology.SetLogging("info", "")
 	fscTopology.EnableLogToFile()
 	fscTopology.EnablePrometheusMetrics()
 
@@ -56,13 +63,16 @@ func Topology() []api.Topology {
 	lender.RegisterViewFactory("query", &views.QueryViewFactory{})
 
 	// Monitoring
-	//monitoringTopology := monitoring.NewTopology()
-	//monitoringTopology.EnableHyperledgerExplorer()
-	//monitoringTopology.EnablePrometheusGrafana()
+	monitoringTopology := monitoring.NewTopology()
+	monitoringTopology.EnableHyperledgerExplorer()
+	monitoringTopology.EnablePrometheusGrafana()
+
+	// Add Fabric SDK to FSC Nodes
+	fscTopology.AddSDK(&fabricsdk.SDK{})
 
 	return []api.Topology{
 		fabricTopology,
 		fscTopology,
-		//monitoringTopology,
+		monitoringTopology,
 	}
 }

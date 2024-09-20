@@ -11,11 +11,15 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/driver"
-	"github.com/hyperledger-labs/orion-server/pkg/types"
 	"github.com/pkg/errors"
 )
+
+type DataRead = driver.DataRead
+
+type DataWrite = driver.DataWrite
+
+type AccessControl = driver.AccessControl
 
 type TransientMap map[string][]byte
 
@@ -114,6 +118,10 @@ func (e *Envelope) UnmarshalJSON(raw []byte) error {
 	return e.e.FromBytes(r)
 }
 
+func (e *Envelope) String() string {
+	return e.e.String()
+}
+
 type LoadedTransaction struct {
 	loadedDataTx driver.LoadedDataTx
 }
@@ -130,11 +138,11 @@ func (t *LoadedTransaction) CoSignAndClose() ([]byte, error) {
 	return t.loadedDataTx.CoSignAndClose()
 }
 
-func (t *LoadedTransaction) Reads() map[string][]*types.DataRead {
+func (t *LoadedTransaction) Reads() map[string][]*DataRead {
 	return t.loadedDataTx.Reads()
 }
 
-func (t *LoadedTransaction) Writes() map[string][]*types.DataWrite {
+func (t *LoadedTransaction) Writes() map[string][]*DataWrite {
 	return t.loadedDataTx.Writes()
 }
 
@@ -146,15 +154,43 @@ func (t *LoadedTransaction) SignedUsers() []string {
 	return t.loadedDataTx.SignedUsers()
 }
 
+type DataTx struct {
+	dataTx driver.DataTx
+}
+
+func (d *DataTx) Put(db string, key string, bytes []byte, a driver.AccessControl) error {
+	return d.dataTx.Put(db, key, bytes, a)
+}
+
+func (d *DataTx) Get(db string, key string) ([]byte, error) {
+	return d.dataTx.Get(db, key)
+}
+
+func (d *DataTx) Commit(sync bool) (string, error) {
+	return d.dataTx.Commit(sync)
+}
+
+func (d *DataTx) Delete(db string, key string) error {
+	return d.dataTx.Delete(db, key)
+}
+
+func (d *DataTx) SignAndClose() ([]byte, error) {
+	return d.dataTx.SignAndClose()
+}
+
+func (d *DataTx) AddMustSignUser(userID string) {
+	d.dataTx.AddMustSignUser(userID)
+}
+
 type Transaction struct {
 	dataTx driver.DataTx
 }
 
-func (d *Transaction) Put(db string, key string, bytes []byte, a *types.AccessControl) error {
+func (d *Transaction) Put(db string, key string, bytes []byte, a AccessControl) error {
 	return d.dataTx.Put(db, key, bytes, a)
 }
 
-func (d *Transaction) Get(db string, key string) ([]byte, *types.Metadata, error) {
+func (d *Transaction) Get(db string, key string) ([]byte, error) {
 	return d.dataTx.Get(db, key)
 }
 
@@ -166,8 +202,8 @@ func (d *Transaction) SignAndClose() ([]byte, error) {
 	return d.dataTx.SignAndClose()
 }
 
-func (d *Transaction) Commit(b bool) (string, *types.TxReceiptResponseEnvelope, error) {
-	return d.dataTx.Commit(b)
+func (d *Transaction) Commit(sync bool) (string, error) {
+	return d.dataTx.Commit(sync)
 }
 
 func (d *Transaction) AddMustSignUser(userID string) {
@@ -204,16 +240,20 @@ func (t *TransactionManager) NewTransaction(txID string, creator string) (*Trans
 	return &Transaction{dataTx: dataTx}, nil
 }
 
+func (t *TransactionManager) NewTransactionFromSession(session *Session, txID string) (*Transaction, error) {
+	dataTx, err := session.DataTx(txID)
+	if err != nil {
+		return nil, err
+	}
+	return &Transaction{dataTx: dataTx}, nil
+}
+
 func (t *TransactionManager) NewLoadedTransaction(env []byte, creator string) (*LoadedTransaction, error) {
 	session, err := t.ons.ons.SessionManager().NewSession(creator)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed to create session for creator [%s]", creator)
 	}
-	var e types.DataTxEnvelope
-	if err = proto.Unmarshal(env, &e); err != nil {
-		return nil, errors.WithMessagef(err, "failed to unmarshal env")
-	}
-	loadedDataTx, err := session.LoadDataTx(&e)
+	loadedDataTx, err := session.LoadDataTx(env)
 	if err != nil {
 		return nil, err
 	}
@@ -252,7 +292,7 @@ func (e *EnvelopeService) Exists(txid string) bool {
 	return e.es.Exists(txid)
 }
 
-func (e *EnvelopeService) StoreEnvelope(txid string, env []byte) error {
+func (e *EnvelopeService) StoreEnvelope(txid string, env interface{}) error {
 	return e.es.StoreEnvelope(txid, env)
 }
 

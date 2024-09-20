@@ -14,10 +14,10 @@ logging:
 peer:
   id: {{ Peer.ID }}
   networkId: {{ .NetworkID }}
-  address: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
+  address: {{ .PeerAddress Peer "Listen" }}
   addressAutoDetect: true
   listenAddress: 0.0.0.0:{{ .PeerPort Peer "Listen" }}
-  chaincodeListenAddress: 0.0.0.0:{{ .PeerPort Peer "Chaincode" }}
+  chaincodeListenAddress: {{ if gt (.PeerPort Peer "Chaincode") 0 }}0.0.0.0:{{ .PeerPort Peer "Chaincode" }}{{ end }}
   keepalive:
     minInterval: 60s
     interval: 300s
@@ -29,9 +29,9 @@ peer:
       interval: 60s
       timeout: 20s
   gossip:
-    bootstrap: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
-    endpoint: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
-    externalEndpoint: 127.0.0.1:{{ .PeerPort Peer "Listen" }}
+    bootstrap: {{ .PeerAddress Peer "Listen" }}
+    endpoint: {{ .PeerAddress Peer "Listen" }}
+    externalEndpoint: {{ .PeerAddress Peer "Listen" }}
     useLeaderElection: true
     orgLeader: false
     membershipTrackerInterval: 5s
@@ -78,7 +78,7 @@ peer:
        blockBufferSize: 100
        maxRetries: 3
   events:
-    address: 127.0.0.1:{{ .PeerPort Peer "Events" }}
+    address: {{ .PeerAddress Peer "Events" }}
     buffersize: 100
     timeout: 10ms
     timewindow: 15m
@@ -117,7 +117,7 @@ peer:
   localMspType: bccsp
   profile:
     enabled:     false
-    listenAddress: 127.0.0.1:{{ .PeerPort Peer "ProfilePort" }}
+    listenAddress: {{ .PeerAddress Peer "ProfilePort" }}
   handlers:
     authFilters:
     - name: DefaultAuth
@@ -172,13 +172,13 @@ vm:
       Memory: 2147483648
 
 chaincode:
-  builder: $(DOCKER_NS)/fabric-ccenv:$(PROJECT_VERSION)
+  builder: $(DOCKER_NS)/fabric-ccenv:latest
   pull: false
   golang:
-    runtime: $(DOCKER_NS)/fabric-baseos:$(PROJECT_VERSION)
+    runtime: $(DOCKER_NS)/fabric-baseos:latest
     dynamicLink: false
   car:
-    runtime: $(DOCKER_NS)/fabric-baseos:$(PROJECT_VERSION)
+    runtime: $(DOCKER_NS)/fabric-baseos:latest
   java:
     runtime: $(DOCKER_NS)/fabric-javaenv:latest
   node:
@@ -210,7 +210,7 @@ ledger:
   state:
     stateDatabase: goleveldb
     couchDBConfig:
-      couchDBAddress: 127.0.0.1:5984
+      couchDBAddress: 0.0.0.0:5984
       username:
       password:
       maxRetries: 3
@@ -223,7 +223,7 @@ ledger:
     enableHistoryDatabase: true
 
 operations:
-  listenAddress: 0.0.0.0:{{ .PeerPort Peer "Operations" }}
+  listenAddress: {{ .PeerAddress Peer "Operations" }}
   tls:
     enabled: false
     cert:
@@ -238,7 +238,7 @@ metrics:
   provider: {{ .MetricsProvider }}
   statsd:
     network: udp
-    address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}127.0.0.1:8125{{ end }}
+    address: {{ if .StatsdEndpoint }}{{ .StatsdEndpoint }}{{ else }}0.0.0.0:8125{{ end }}
     writeInterval: 5s
     prefix: {{ ReplaceAll (ToLower Peer.ID) "." "_" }}
 `
@@ -248,7 +248,8 @@ fabric:
   enabled: true
   {{ FabricName }}:
     default: {{ DefaultNetwork }}
-    mspCacheSize: 500
+    driver: {{ Driver }}
+    mspCacheSize: 3
     defaultMSP: {{ Peer.DefaultIdentity }}
     msps: {{ range Peer.Identities }}
       - id: {{ .ID }}
@@ -275,43 +276,37 @@ fabric:
                Security: {{ .Opts.PKCS11.Security }}
     {{- end }}
     tls:
-      enabled:  true
+      enabled:  {{ TLSEnabled }}
       clientAuthRequired: {{ .ClientAuthRequired }}
-      cert:
-        file: {{ .PeerLocalTLSDir Peer }}/server.crt
-      key:
-        file: {{ .PeerLocalTLSDir Peer }}/server.key
+      {{- if .ClientAuthRequired }}
       clientCert:
         file: {{ .PeerLocalTLSDir Peer }}/server.crt
       clientKey:
         file: {{ .PeerLocalTLSDir Peer }}/server.key
-      rootcert:
-        file: {{ .PeerLocalTLSDir Peer }}/ca.crt
-      clientRootCAs:
-        files:
-        - {{ .PeerLocalTLSDir Peer }}/ca.crt
-      rootCertFile: {{ .CACertsBundlePath }}
-      keepalive:
-       client:
-         interval: 60s
-         timeout: 600s
-       server:
-         interval: 60s
-         timeout: 600s
-         minInterval: 60s 
+      {{- end }} 
+    keepalive:
+      interval: 60s
+      timeout: 600s
     ordering:
       numRetries: 3
-      retryInternal: 3s
+      retryInterval: 3s
     peers: {{ range Peers }}
       - address: {{ PeerAddress . "Listen" }}
-        connectionTimeout: 10s
-        tlsEnabled: true        
+        connectionTimeout: 10s        
         tlsRootCertFile: {{ CACertsBundlePath }}
         serverNameOverride:
+        {{ if .TLSDisabled }}tlsDisabled: {{ .TLSDisabled }} {{ end }}
+        {{ if .Usage }}usage: {{ .Usage }} {{ end }}
     {{- end }}
     channels: {{ range .Channels }}
       - name: {{ .Name }}
         default: {{ .Default }}
+        numRetries: 3
+        retrySleep: 1s
+        committer:
+          waitForEventTimeout: 300s
+          pollingTimeout: 100ms
+          parallelism: 5
         chaincodes: {{range Chaincodes .Name }}
           - name: {{ .Chaincode.Name }}
             private: {{ .Private }}
@@ -319,20 +314,28 @@ fabric:
     {{- end }}
     vault:
       persistence:
-        type: file
+        # Persistence type can be \'badger\' (on disk) or \'memory\'
+        type: {{ FSCNodeVaultPersistence.Type }}
         opts:
+          {{- if eq FSCNodeVaultPersistence.Type "sql" }}
+          driver: {{ FSCNodeVaultPersistence.SQL.DriverType }}
+          dataSource: {{ FSCNodeVaultPersistence.SQL.DataSource }}
+          # {{- else if eq FSCNodeVaultPersistence.Type "orion" }}
+          # network: {{ FSCNodeVaultPersistence.Orion.Network }}
+          # database: {{ FSCNodeVaultPersistence.Orion.Database }}
+          # creator: {{ FSCNodeVaultPersistence.Orion.Creator }}
+          {{- else }}
           path: {{ FSCNodeVaultPath }}
+          {{- end }}
       txidstore:
         cache:
           # Sets the maximum number of cached items 
-          cache: 200
+          size: 200
     endpoint:
       resolvers: {{ range .Resolvers }}
       - name: {{ .Name }}
         domain: {{ .Domain }}
         identity:
-          id: {{ .Identity.ID }}
-          mspType: {{ .Identity.MSPType }}
           mspID: {{ .Identity.MSPID }}
           path: {{ .Identity.Path }}
         addresses: {{ range $key, $value := .Addresses }}

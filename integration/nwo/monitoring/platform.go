@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package monitoring
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,8 +17,11 @@ import (
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/docker"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring/hle"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring/monitoring"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring/optl"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	. "github.com/onsi/gomega"
+	prom_api "github.com/prometheus/client_golang/api"
+	prom_v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/tedsuo/ifrit/grouper"
 )
 
@@ -54,9 +58,14 @@ type Platform struct {
 	Prefix     string
 	Extensions []Extension
 	networkID  string
+	promAPI    prom_v1.API
 }
 
 func New(reg api.Context, topology *Topology) *Platform {
+	promClient, err := prom_api.NewClient(prom_api.Config{Address: fmt.Sprintf("http://0.0.0.0:%d", topology.PrometheusPort)})
+	if err != nil {
+		panic(err)
+	}
 	p := &Platform{
 		Context:    reg,
 		RootDir:    reg.RootDir(),
@@ -64,9 +73,11 @@ func New(reg api.Context, topology *Topology) *Platform {
 		topology:   topology,
 		Extensions: []Extension{},
 		networkID:  common.UniqueName(),
+		promAPI:    prom_v1.NewAPI(promClient),
 	}
 	p.AddExtension(hle.NewExtension(p))
 	p.AddExtension(monitoring.NewExtension(p))
+	p.AddExtension(optl.NewExtension(p))
 
 	return p
 }
@@ -127,6 +138,10 @@ func (p *Platform) Cleanup() {
 	Expect(err).NotTo(HaveOccurred())
 }
 
+func (p *Platform) PrometheusAPI() prom_v1.API {
+	return p.promAPI
+}
+
 func (p *Platform) AddExtension(ex Extension) {
 	p.Extensions = append(p.Extensions, ex)
 }
@@ -161,4 +176,12 @@ func (p *Platform) PrometheusPort() int {
 
 func (p *Platform) GrafanaPort() int {
 	return p.topology.GrafanaPort
+}
+
+func (p *Platform) OPTL() bool {
+	return p.topology.OPTL
+}
+
+func (p *Platform) OPTLPort() int {
+	return p.topology.OPTLPort
 }

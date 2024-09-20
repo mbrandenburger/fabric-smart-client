@@ -13,7 +13,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
@@ -26,8 +25,8 @@ import (
 )
 
 const (
-	ExplorerDB = "hyperledger/explorer-db:latest"
-	Explorer   = "hyperledger/explorer:latest"
+	ExplorerDB = "ghcr.io/hyperledger-labs/explorer-db:latest"
+	Explorer   = "ghcr.io/hyperledger-labs/explorer:latest"
 )
 
 var RequiredImages = []string{
@@ -67,14 +66,14 @@ func (n *Extension) startExplorerDB() {
 	containerName := n.platform.NetworkID() + "-explorerdb.mynetwork.com"
 
 	pgdataVolumeName := n.platform.NetworkID() + "-pgdata"
-	_, err = cli.VolumeCreate(ctx, volume.VolumeCreateBody{
+	_, err = cli.VolumeCreate(ctx, volume.CreateOptions{
 		Name: pgdataVolumeName,
 	})
 	Expect(err).ToNot(HaveOccurred())
 
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Hostname: "explorerdb.mynetwork.com",
-		Image:    "hyperledger/explorer-db:latest",
+		Image:    ExplorerDB,
 		Tty:      false,
 		Env: []string{
 			"DATABASE_DATABASE=fabricexplorer",
@@ -104,11 +103,11 @@ func (n *Extension) startExplorerDB() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	Expect(cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})).ToNot(HaveOccurred())
+	Expect(cli.ContainerStart(ctx, resp.ID, container.StartOptions{})).ToNot(HaveOccurred())
 
 	dockerLogger := flogging.MustGetLogger("monitoring.hle.db.container")
 	go func() {
-		reader, err := cli.ContainerLogs(context.Background(), resp.ID, types.ContainerLogsOptions{
+		reader, err := cli.ContainerLogs(context.Background(), resp.ID, container.LogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
 			Follow:     true,
@@ -139,7 +138,7 @@ func (n *Extension) startExplorer() {
 	containerName := n.platform.NetworkID() + "-explorer.mynetwork.com"
 
 	walletStoreVolumeName := n.platform.NetworkID() + "-walletstore"
-	_, err = cli.VolumeCreate(ctx, volume.VolumeCreateBody{
+	_, err = cli.VolumeCreate(ctx, volume.CreateOptions{
 		Name: walletStoreVolumeName,
 	})
 	Expect(err).ToNot(HaveOccurred())
@@ -150,7 +149,7 @@ func (n *Extension) startExplorer() {
 	port := strconv.Itoa(n.platform.HyperledgerExplorerPort())
 	resp, err := cli.ContainerCreate(ctx, &container.Config{
 		Hostname: "explorer.mynetwork.com",
-		Image:    "hyperledger/explorer:latest",
+		Image:    Explorer,
 		Tty:      false,
 		Env: []string{
 			"DATABASE_HOST=explorerdb.mynetwork.com",
@@ -221,12 +220,12 @@ func (n *Extension) startExplorer() {
 	})
 	Expect(err).ToNot(HaveOccurred())
 
-	Expect(cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})).ToNot(HaveOccurred())
+	Expect(cli.ContainerStart(ctx, resp.ID, container.StartOptions{})).ToNot(HaveOccurred())
 	time.Sleep(3 * time.Second)
 
 	dockerLogger := flogging.MustGetLogger("monitoring.hle.container")
 	go func() {
-		reader, err := cli.ContainerLogs(context.Background(), resp.ID, types.ContainerLogsOptions{
+		reader, err := cli.ContainerLogs(context.Background(), resp.ID, container.LogsOptions{
 			ShowStdout: true,
 			ShowStderr: true,
 			Follow:     true,

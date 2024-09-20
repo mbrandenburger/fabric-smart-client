@@ -9,9 +9,12 @@ package context
 import (
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 )
+
+var logger = flogging.MustGetLogger("fsc.integration")
 
 type Builder interface {
 	Build(path string) string
@@ -31,9 +34,13 @@ type Context struct {
 	PlatformsByName  map[string]api.Platform
 
 	portsByPeerID      map[string]api.Ports
+	hostByPeerID       map[string]string
+	portsByOrdererID   map[string]api.Ports
+	hostByOrdererID    map[string]string
 	extensionsByPeerID map[string]api.Extensions
 
-	ViewClients             map[string]api.ViewClient
+	ViewClients             map[string]api.GRPCClient
+	WebClients              map[string]api.WebClient
 	ViewCLIs                map[string]api.ViewClient
 	ViewIdentities          map[string]view.Identity
 	ViewIdentityAliases     map[string][]string
@@ -54,7 +61,8 @@ func New(rootDir string, portCounter uint16, builder api.Builder, topologies ...
 		rootDir:                 rootDir,
 		PortCounter:             portCounter,
 		Builder:                 builder,
-		ViewClients:             map[string]api.ViewClient{},
+		ViewClients:             map[string]api.GRPCClient{},
+		WebClients:              map[string]api.WebClient{},
 		ViewCLIs:                map[string]api.ViewClient{},
 		ViewIdentities:          map[string]view.Identity{},
 		ViewIdentityAliases:     map[string][]string{},
@@ -62,6 +70,9 @@ func New(rootDir string, portCounter uint16, builder api.Builder, topologies ...
 		ClientSigningIdentities: map[string]SigningIdentity{},
 		AdminSigningIdentities:  map[string]SigningIdentity{},
 		portsByPeerID:           map[string]api.Ports{},
+		hostByPeerID:            map[string]string{},
+		portsByOrdererID:        map[string]api.Ports{},
+		hostByOrdererID:         map[string]string{},
 		extensionsByPeerID:      map[string]api.Extensions{},
 		TopologiesByName:        topologiesByName,
 		PlatformsByName:         map[string]api.Platform{},
@@ -78,6 +89,30 @@ func (c *Context) PortsByPeerID(prefix string, id string) api.Ports {
 
 func (c *Context) SetPortsByPeerID(prefix string, id string, ports api.Ports) {
 	c.portsByPeerID[prefix+id] = ports
+}
+
+func (c *Context) HostByPeerID(prefix string, id string) string {
+	return c.hostByPeerID[prefix+id]
+}
+
+func (c *Context) SetHostByPeerID(prefix string, id string, host string) {
+	c.hostByPeerID[prefix+id] = host
+}
+
+func (c *Context) PortsByOrdererID(prefix string, id string) api.Ports {
+	return c.portsByOrdererID[prefix+id]
+}
+
+func (c *Context) SetPortsByOrdererID(prefix string, id string, ports api.Ports) {
+	c.portsByOrdererID[prefix+id] = ports
+}
+
+func (c *Context) HostByOrdererID(prefix string, id string) string {
+	return c.hostByOrdererID[prefix+id]
+}
+
+func (c *Context) SetHostByOrdererID(prefix string, id string, host string) {
+	c.hostByOrdererID[prefix+id] = host
 }
 
 func (c *Context) TopologyByName(name string) api.Topology {
@@ -113,8 +148,12 @@ func (c *Context) ClientSigningIdentity(name string) view2.SigningIdentity {
 	return c.ClientSigningIdentities[name]
 }
 
-func (c *Context) SetViewClient(name string, client api.ViewClient) {
+func (c *Context) SetViewClient(name string, client api.GRPCClient) {
 	c.ViewClients[name] = client
+}
+
+func (c *Context) SetWebClient(name string, client api.WebClient) {
+	c.WebClients[name] = client
 }
 
 func (c *Context) SetCLI(name string, client api.ViewClient) {
@@ -147,7 +186,11 @@ func (c *Context) AddIdentityAlias(id string, alias string) {
 }
 
 func (c *Context) PlatformByName(name string) api.Platform {
-	return c.PlatformsByName[name]
+	p, ok := c.PlatformsByName[name]
+	if !ok {
+		logger.Errorf("cannot find platform with name [%s], platforms available [%v]", name, c.PlatformsByName)
+	}
+	return p
 }
 
 func (c *Context) PlatformsByType(typ string) []api.Platform {
@@ -161,6 +204,7 @@ func (c *Context) PlatformsByType(typ string) []api.Platform {
 }
 
 func (c *Context) AddPlatform(platform api.Platform) {
+	logger.Infof("Add platform [%s:%s]", platform.Type(), platform.Name())
 	c.PlatformsByName[platform.Name()] = platform
 }
 

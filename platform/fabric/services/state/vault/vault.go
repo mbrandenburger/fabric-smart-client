@@ -9,16 +9,16 @@ package vault
 import (
 	"encoding/json"
 
-	"github.com/pkg/errors"
-
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/endorser"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/state"
-	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	"github.com/pkg/errors"
 )
 
 type ListStateQueryIteratorInterface struct {
-	it   *fabric.ResultsIterator
+	it   fabric.ResultsIterator
 	next *fabric.Read
 }
 
@@ -41,16 +41,16 @@ func (l *ListStateQueryIteratorInterface) Next(state interface{}) (string, error
 	return "", json.Unmarshal(l.next.Raw, state)
 }
 
-type NewQueryExecutorFunc func() (*fabric.QueryExecutor, error)
+type NewQueryExecutorFunc func() (driver.QueryExecutor, error)
 
 type vault struct {
-	sp               view2.ServiceProvider
+	sp               view.ServiceProvider
 	network          string
 	channel          string
 	NewQueryExecutor NewQueryExecutorFunc
 }
 
-func New(sp view2.ServiceProvider, network, channel string, NewQueryExecutor func() (*fabric.QueryExecutor, error)) *vault {
+func New(sp view.ServiceProvider, network, channel string, NewQueryExecutor func() (driver.QueryExecutor, error)) *vault {
 	return &vault{
 		sp:               sp,
 		network:          network,
@@ -102,11 +102,15 @@ func (f *vault) GetStateByPartialCompositeID(ns string, prefix string, attrs []s
 }
 
 func (f *vault) GetStateCertification(namespace string, key string) ([]byte, error) {
+	fns, err := fabric.GetFabricNetworkService(f.sp, f.network)
+	if err != nil {
+		return nil, err
+	}
 	_, tx, err := endorser.NewTransactionWith(
 		f.sp,
 		f.network,
 		f.channel,
-		fabric.GetFabricNetworkService(f.sp, f.network).LocalMembership().DefaultIdentity(),
+		fns.LocalMembership().DefaultIdentity(),
 	)
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed creating transaction [%s:%s]", namespace, key)
@@ -135,18 +139,22 @@ func (f *vault) GetStateCertification(namespace string, key string) ([]byte, err
 	return raw, nil
 }
 
-type VaultFunc func(ctx view2.ServiceProvider, id string) *fabric.Vault
+type VaultFunc func(ctx view.ServiceProvider, id string) *fabric.Vault
 
 type service struct {
-	sp view2.ServiceProvider
+	sp view.ServiceProvider
 }
 
-func NewService(sp view2.ServiceProvider) *service {
+func NewService(sp view.ServiceProvider) *service {
 	return &service{sp: sp}
 }
 
 func (w *service) Vault(network string, channel string) (state.Vault, error) {
-	ch, err := fabric.GetFabricNetworkService(w.sp, network).Channel(channel)
+	fns, err := fabric.GetFabricNetworkService(w.sp, network)
+	if err != nil {
+		return nil, err
+	}
+	ch, err := fns.Channel(channel)
 	if err != nil {
 		return nil, err
 	}

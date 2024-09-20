@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
@@ -43,14 +44,6 @@ func (m *Main) Execute() {
 	replacer := strings.NewReplacer(".", "_")
 	viper.SetEnvKeyReplacer(replacer)
 
-	// Define command-line flags that are valid for all peer commands and
-	// subcommands.
-	mainFlags := m.mainCmd.PersistentFlags()
-
-	mainFlags.String("logging-level", "", "Legacy logging level flag")
-	viper.BindPFlag("logging_level", mainFlags.Lookup("logging-level"))
-	mainFlags.MarkHidden("logging-level")
-
 	// On failure Cobra prints the usage message and error string, so we only
 	// need to exit with a non-0 status
 	if m.mainCmd.Execute() != nil {
@@ -66,7 +59,7 @@ func VersionCmd(pName string) *cobra.Command {
 		Long:  `Print current version of IOU CLI.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 0 {
-				return fmt.Errorf("trailing args detected")
+				return errors.Errorf("trailing args detected")
 			}
 			// Parsing of the command line is done so silence cmd usage
 			cmd.SilenceUsage = true

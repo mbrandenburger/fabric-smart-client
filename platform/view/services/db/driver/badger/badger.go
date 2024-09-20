@@ -7,100 +7,76 @@ SPDX-License-Identifier: Apache-2.0
 package badger
 
 import (
+	"context"
+	"runtime/debug"
 	"sync"
 	"time"
 
 	"github.com/dgraph-io/badger/v3"
+	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils"
+	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/errors"
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
-	dbproto "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/badger/proto"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/keys"
+	driver2 "github.com/hyperledger-labs/fabric-smart-client/platform/common/driver"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver"
+	keys2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/keys"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
-	"github.com/pkg/errors"
-	"golang.org/x/net/context"
+)
+
+const (
+	BadgerPersistence driver2.PersistenceType = "badger"
+	FilePersistence   driver2.PersistenceType = "file"
 )
 
 var logger = flogging.MustGetLogger("db.driver.badger")
 
-type badgerDB struct {
+type DB struct {
 	db            *badger.DB
 	txn           *badger.Txn
 	txnLock       sync.RWMutex
 	cancelCleaner context.CancelFunc
+
+	debugStack []byte
 }
 
-const (
-	defaultGCInterval     = 5 * time.Minute // TODO let the user define this via config
-	defaultGCDiscardRatio = 0.5             // recommended ratio by badger docs
-)
-
-func OpenDB(path string) (*badgerDB, error) {
-	if len(path) == 0 {
+func OpenDB(opts Opts, config driver.Config) (*DB, error) {
+	if len(opts.Path) == 0 {
 		return nil, errors.Errorf("path cannot be empty")
 	}
 
 	// let's pass our logger badger
-	opt := badger.DefaultOptions(path)
+	opt := badger.DefaultOptions(opts.Path)
 	opt.Logger = logger
+	copy(&opt, opts, config)
 
 	db, err := badger.Open(opt)
 	if err != nil {
-		return nil, errors.Wrapf(err, "could not open DB at '%s'", path)
+		return nil, errors.Wrapf(err, "could not open DB at '%s'", opts.Path)
 	}
+
+	// count number of key
+	counter := uint64(0)
+	if err := db.View(func(txn *badger.Txn) error {
+		opts := badger.DefaultIteratorOptions
+		opts.PrefetchValues = false
+		it := txn.NewIterator(opts)
+		defer it.Close()
+		for it.Rewind(); it.Valid(); it.Next() {
+			it.Item()
+			counter++
+		}
+		return nil
+	}); err != nil {
+		return nil, errors.Wrapf(err, "failed to count number of keys")
+	}
+	logger.Debugf("badger db at [%s] contains [%d] keys", opts.Path, counter)
 
 	// start our auto cleaner
 	cancel := autoCleaner(db, defaultGCInterval, defaultGCDiscardRatio)
 
-	return &badgerDB{db: db, cancelCleaner: cancel}, nil
+	return &DB{db: db, cancelCleaner: cancel}, nil
 }
 
-//go:generate counterfeiter -o mock/badger.go -fake-name BadgerDB . badgerDBInterface
-
-// badgerDBInterface exists mainly for testing the auto cleaner
-type badgerDBInterface interface {
-	IsClosed() bool
-	RunValueLogGC(discardRatio float64) error
-	Opts() badger.Options
-}
-
-// autoCleaner runs badger garbage collection periodically as long as the db is open
-func autoCleaner(db badgerDBInterface, badgerGCInterval time.Duration, badgerDiscardRatio float64) context.CancelFunc {
-	if db == nil || db.Opts().InMemory {
-		// not needed when we run badger in memory mode
-		return nil
-	}
-
-	ctx, chancel := context.WithCancel(context.Background())
-	go func() {
-		ticker := time.NewTicker(badgerGCInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if db.IsClosed() {
-					// no need to clean anymore
-					return
-				}
-				if err := db.RunValueLogGC(badgerDiscardRatio); err != nil {
-					switch err {
-					case badger.ErrRejected:
-						logger.Warnf("badger: value log garbage collection rejected")
-					case badger.ErrNoRewrite:
-						// do nothing
-					default:
-						logger.Warnf("badger: unexpected error while performing value log clean up: %s", err)
-					}
-				}
-				// continue with the next tick to clean up again
-			}
-		}
-	}()
-
-	return chancel
-}
-
-func (db *badgerDB) Close() error {
+func (db *DB) Close() error {
 
 	// TODO: what to do with db.txn if it's not nil?
 
@@ -117,19 +93,21 @@ func (db *badgerDB) Close() error {
 	return nil
 }
 
-func (db *badgerDB) BeginUpdate() error {
+func (db *DB) BeginUpdate() error {
 	db.txnLock.Lock()
 	defer db.txnLock.Unlock()
 
 	if db.txn != nil {
+		logger.Errorf("previous commit in progress, locked by [%s]", db.debugStack)
 		return errors.New("previous commit in progress")
 	}
 	db.txn = db.db.NewTransaction(true)
+	db.debugStack = debug.Stack()
 
 	return nil
 }
 
-func (db *badgerDB) Commit() error {
+func (db *DB) Commit() error {
 	db.txnLock.Lock()
 	defer db.txnLock.Unlock()
 
@@ -146,7 +124,7 @@ func (db *badgerDB) Commit() error {
 	return nil
 }
 
-func (db *badgerDB) Discard() error {
+func (db *DB) Discard() error {
 	db.txnLock.Lock()
 	defer db.txnLock.Unlock()
 
@@ -160,59 +138,26 @@ func (db *badgerDB) Discard() error {
 	return nil
 }
 
-func dbKey(namespace, key string) string {
-	return namespace + keys.NamespaceSeparator + key
-}
-
-func (db *badgerDB) versionedValue(txn *badger.Txn, dbKey string) (*dbproto.VersionedValue, error) {
-	it, err := txn.Get([]byte(dbKey))
-	if err == badger.ErrKeyNotFound {
-		return &dbproto.VersionedValue{
-			Version: dbproto.V1,
-		}, nil
-	}
-	if err != nil {
-		return nil, errors.Wrapf(err, "could not retrieve item for key %s", dbKey)
+func (db *DB) SetState(namespace driver2.Namespace, key string, value driver.VersionedValue) error {
+	if len(value.Raw) == 0 {
+		logger.Warnf("set key [%s:%d:%d] to nil value, will be deleted instead", key, value.Block, value.TxNum)
+		return db.DeleteState(namespace, key)
 	}
 
-	return versionedValue(it, dbKey)
-}
-
-func versionedValue(item *badger.Item, dbKey string) (*dbproto.VersionedValue, error) {
-	protoValue := &dbproto.VersionedValue{}
-	err := item.Value(func(val []byte) error {
-		if err := proto.Unmarshal(val, protoValue); err != nil {
-			return errors.Wrapf(err, "could not unmarshal VersionedValue for key %s", dbKey)
-		}
-
-		if protoValue.Version != dbproto.V1 {
-			return errors.Errorf("invalid version, expected %d, got %d", dbproto.V1, protoValue.Version)
-		}
-
-		return nil
-	})
-	if err != nil {
-		return nil, errors.Wrapf(err, "could not get value for key %s", dbKey)
-	}
-
-	return protoValue, nil
-}
-
-func (db *badgerDB) SetState(namespace, key string, value []byte, block, txnum uint64) error {
 	if db.txn == nil {
 		panic("programming error, writing without ongoing update")
 	}
 
 	dbKey := dbKey(namespace, key)
 
-	v, err := db.versionedValue(db.txn, dbKey)
+	v, err := txVersionedValue(db.txn, dbKey)
 	if err != nil {
 		return err
 	}
 
-	v.Value = value
-	v.Block = block
-	v.Txnum = txnum
+	v.Value = value.Raw
+	v.Block = value.Block
+	v.Txnum = value.TxNum
 
 	bytes, err := proto.Marshal(v)
 	if err != nil {
@@ -227,14 +172,14 @@ func (db *badgerDB) SetState(namespace, key string, value []byte, block, txnum u
 	return nil
 }
 
-func (db *badgerDB) SetStateMetadata(namespace, key string, metadata map[string][]byte, block, txnum uint64) error {
+func (db *DB) SetStateMetadata(namespace, key string, metadata map[string][]byte, block, txnum uint64) error {
 	if db.txn == nil {
 		panic("programming error, writing without ongoing update")
 	}
 
 	dbKey := dbKey(namespace, key)
 
-	v, err := db.versionedValue(db.txn, dbKey)
+	v, err := txVersionedValue(db.txn, dbKey)
 	if err != nil {
 		return err
 	}
@@ -256,7 +201,7 @@ func (db *badgerDB) SetStateMetadata(namespace, key string, metadata map[string]
 	return nil
 }
 
-func (db *badgerDB) DeleteState(namespace, key string) error {
+func (db *DB) DeleteState(namespace, key string) error {
 	if db.txn == nil {
 		panic("programming error, writing without ongoing update")
 	}
@@ -271,30 +216,117 @@ func (db *badgerDB) DeleteState(namespace, key string) error {
 	return nil
 }
 
-func (db *badgerDB) GetState(namespace, key string) ([]byte, uint64, uint64, error) {
+func (db *DB) GetState(namespace driver2.Namespace, key string) (driver.VersionedValue, error) {
 	dbKey := dbKey(namespace, key)
 
 	txn := db.db.NewTransaction(false)
 	defer txn.Discard()
 
-	v, err := db.versionedValue(txn, dbKey)
+	v, err := txVersionedValue(txn, dbKey)
 	if err != nil {
-		return nil, 0, 0, err
+		return driver.VersionedValue{}, err
 	}
 
-	return v.Value, v.Block, v.Txnum, nil
+	return driver.VersionedValue{Raw: v.Value, Block: v.Block, TxNum: v.Txnum}, err
 }
 
-func (db *badgerDB) GetStateMetadata(namespace, key string) (map[string][]byte, uint64, uint64, error) {
+func (db *DB) GetStateSetIterator(ns string, keys ...string) (driver.VersionedResultsIterator, error) {
+	reads := make([]*driver.VersionedRead, len(keys))
+	for i, key := range keys {
+		vv, err := db.GetState(ns, key)
+		if err != nil {
+			return nil, err
+		}
+		reads[i] = &driver.VersionedRead{
+			Key:   key,
+			Raw:   vv.Raw,
+			Block: vv.Block,
+			TxNum: vv.TxNum,
+		}
+	}
+	return &keys2.DummyVersionedIterator{Items: reads}, nil
+}
+
+func (db *DB) GetStateMetadata(namespace, key string) (map[string][]byte, uint64, uint64, error) {
 	dbKey := dbKey(namespace, key)
 
 	txn := db.db.NewTransaction(false)
 	defer txn.Discard()
 
-	v, err := db.versionedValue(txn, dbKey)
+	v, err := txVersionedValue(txn, dbKey)
 	if err != nil {
 		return nil, 0, 0, err
 	}
 
 	return v.Meta, v.Block, v.Txnum, nil
+}
+
+func (db *DB) NewWriteTransaction() (driver.WriteTransaction, error) {
+	txn := db.db.NewTransaction(true)
+	retryRunner := utils.NewRetryRunner(3, 100*time.Millisecond, true)
+	return &WriteTransaction{
+		db:          db.db,
+		txn:         txn,
+		retryRunner: retryRunner,
+	}, nil
+}
+
+type WriteTransaction struct {
+	db          *badger.DB
+	txn         *badger.Txn
+	retryRunner utils.RetryRunner
+}
+
+func (w *WriteTransaction) SetState(namespace driver2.Namespace, key string, value driver.VersionedValue) error {
+	if w.txn == nil {
+		panic("programming error, writing without ongoing update")
+	}
+
+	dbKey := dbKey(namespace, key)
+
+	v, err := txVersionedValue(w.txn, dbKey)
+	if err != nil {
+		return err
+	}
+
+	v.Value = value.Raw
+	v.Block = value.Block
+	v.Txnum = value.TxNum
+
+	bytes, err := proto.Marshal(v)
+	if err != nil {
+		return errors.Wrapf(err, "could not marshal VersionedValue for key %s", dbKey)
+	}
+
+	err = w.txn.Set([]byte(dbKey), bytes)
+	if err != nil {
+		return errors.Wrapf(err, "could not set value for key %s", dbKey)
+	}
+
+	return nil
+}
+
+func (w *WriteTransaction) DeleteState(namespace driver2.Namespace, key string) error {
+	dbKey := dbKey(namespace, key)
+
+	err := w.txn.Delete([]byte(dbKey))
+	if err != nil {
+		return errors.Wrapf(err, "could not delete value for key %s", dbKey)
+	}
+
+	return nil
+}
+
+func (w *WriteTransaction) Commit() error {
+	if err := w.txn.Commit(); err != nil {
+		return err
+	}
+	w.txn = nil
+	return nil
+}
+
+func (w *WriteTransaction) Discard() error {
+	w.txn.Discard()
+	w.txn = nil
+	return nil
 }

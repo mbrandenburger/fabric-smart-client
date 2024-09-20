@@ -9,7 +9,6 @@ package ca
 import (
 	"crypto"
 	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -17,7 +16,6 @@ import (
 	"encoding/asn1"
 	"encoding/json"
 	"encoding/pem"
-	"io/ioutil"
 	"math/big"
 	"net"
 	"os"
@@ -104,7 +102,11 @@ func NewCA(
 	subject.CommonName = name
 
 	template.Subject = subject
-	template.SubjectKeyId = computeSKI(priv)
+	ski, err := computeSKI(priv)
+	if err != nil {
+		return nil, err
+	}
+	template.SubjectKeyId = ski
 
 	x509Cert, err := genCertificateECDSA(
 		baseDir,
@@ -129,6 +131,57 @@ func NewCA(
 		OrganizationalUnit: orgUnit,
 		StreetAddress:      streetAddress,
 		PostalCode:         postalCode,
+	}
+
+	return ca, err
+}
+
+func LoadCA(baseDir string) (*CA, error) {
+	var ca *CA
+
+	// check baseDir exist
+	_, err := os.Stat(baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// Load private key
+	priv, err := csp2.LoadPrivateKey(baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// load certificate
+	x509Cert, err := LoadCertificateECDSA(baseDir)
+	if err != nil {
+		return nil, err
+	}
+
+	// setup ca
+	ca = &CA{
+		Name: x509Cert.Subject.CommonName,
+		Signer: &csp2.ECDSASigner{
+			PrivateKey: priv,
+		},
+		SignCert: x509Cert,
+	}
+	if len(x509Cert.Subject.Country) > 0 {
+		ca.Country = x509Cert.Subject.Country[0]
+	}
+	if len(x509Cert.Subject.Province) > 0 {
+		ca.Province = x509Cert.Subject.Province[0]
+	}
+	if len(x509Cert.Subject.Locality) > 0 {
+		ca.Locality = x509Cert.Subject.Locality[0]
+	}
+	if len(x509Cert.Subject.OrganizationalUnit) > 0 {
+		ca.OrganizationalUnit = x509Cert.Subject.OrganizationalUnit[0]
+	}
+	if len(x509Cert.Subject.StreetAddress) > 0 {
+		ca.StreetAddress = x509Cert.Subject.StreetAddress[0]
+	}
+	if len(x509Cert.Subject.PostalCode) > 0 {
+		ca.PostalCode = x509Cert.Subject.PostalCode[0]
 	}
 
 	return ca, err
@@ -211,13 +264,17 @@ func (ca *CA) SignCertificate(baseDir, name string, orgUnits, alternateNames []s
 }
 
 // compute Subject Key Identifier
-func computeSKI(privKey *ecdsa.PrivateKey) []byte {
+func computeSKI(privKey *ecdsa.PrivateKey) ([]byte, error) {
 	// Marshall the public key
-	raw := elliptic.Marshal(privKey.Curve, privKey.PublicKey.X, privKey.PublicKey.Y)
+	pk, err := privKey.PublicKey.ECDH()
+	if err != nil {
+		return nil, err
+	}
+	raw := pk.Bytes()
 
 	// Hash it
 	hash := sha256.Sum256(raw)
-	return hash[:]
+	return hash[:], nil
 }
 
 // default template for X509 subject
@@ -327,7 +384,7 @@ func LoadCertificateECDSA(certPath string) (*x509.Certificate, error) {
 
 	walkFunc := func(path string, info os.FileInfo, err error) error {
 		if strings.HasSuffix(path, ".pem") {
-			rawCert, err := ioutil.ReadFile(path)
+			rawCert, err := os.ReadFile(path)
 			if err != nil {
 				return err
 			}

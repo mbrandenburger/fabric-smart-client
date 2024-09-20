@@ -12,42 +12,44 @@ import (
 
 	config2 "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/config"
 	msp2 "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp"
-	mock2 "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp/mock"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp/driver/mock"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/sig"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/core/config"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/core/sig"
-	_ "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/memory"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver"
+	mem "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/memory"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/kvs"
 	registry2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/registry"
 	"github.com/otiai10/copy"
 	"github.com/stretchr/testify/assert"
 )
 
-//go:generate counterfeiter -o mock/config_provider.go -fake-name ConfigProvider . ConfigProvider
-
 func TestRegisterIdemixLocalMSP(t *testing.T) {
 	registry := registry2.New()
 
-	cp := &mock2.ConfigProvider{}
+	cp := &mock.ConfigProvider{}
 	cp.IsSetReturns(false)
 	assert.NoError(t, registry.RegisterService(cp))
-	kvss, err := kvs.New("memory", "", registry)
+	var sp view.ServiceProvider = registry
+	var dbDriver driver.Driver = &mem.Driver{}
+	kvss, err := kvs.NewWithConfig(dbDriver, "", view.GetConfigService(sp))
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(kvss))
-	des, err := sig.NewMultiplexDeserializer(registry)
-	assert.NoError(t, err)
+	des := sig.NewMultiplexDeserializer()
 	assert.NoError(t, registry.RegisterService(des))
-	config, err := config2.New(cp, "default", true)
+	config, err := config2.NewService(cp, "default", true)
 	assert.NoError(t, err)
-	mspService := msp2.NewLocalMSPManager(registry, config, nil, nil, nil, 100)
+	mspService := msp2.NewLocalMSPManager(config, kvss, nil, nil, nil, des, 100)
 	assert.NoError(t, registry.RegisterService(mspService))
-	sigService := sig.NewSignService(registry, nil, kvss)
+	sigService := sig.NewService(des, kvss)
 	assert.NoError(t, registry.RegisterService(sigService))
 
 	assert.NoError(t, mspService.RegisterIdemixMSP("apple", "./idemix/testdata/idemix", "idemix"))
 	ii := mspService.GetIdentityInfoByLabel(msp2.IdemixMSP, "apple")
 	assert.NotNil(t, ii)
 	assert.Equal(t, "apple", ii.ID)
-	assert.Equal(t, "idemix", ii.EnrollmentID)
+	assert.Equal(t, "alice", ii.EnrollmentID)
+
 	id, info, err := ii.GetIdentity(nil)
 	assert.NoError(t, err)
 	assert.NotNil(t, id)
@@ -60,17 +62,18 @@ func TestIdemixTypeFolder(t *testing.T) {
 	cp, err := config.NewProvider("./testdata/idemixtypefolder")
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(cp))
-	kvss, err := kvs.New("memory", "", registry)
+	var sp view.ServiceProvider = registry
+	var dbDriver driver.Driver = &mem.Driver{}
+	kvss, err := kvs.NewWithConfig(dbDriver, "", view.GetConfigService(sp))
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(kvss))
-	des, err := sig.NewMultiplexDeserializer(registry)
-	assert.NoError(t, err)
+	des := sig.NewMultiplexDeserializer()
 	assert.NoError(t, registry.RegisterService(des))
-	config, err := config2.New(cp, "default", true)
+	config, err := config2.NewService(cp, "default", true)
 	assert.NoError(t, err)
-	mspService := msp2.NewLocalMSPManager(registry, config, nil, nil, nil, 100)
+	mspService := msp2.NewLocalMSPManager(config, kvss, nil, nil, nil, des, 100)
 	assert.NoError(t, registry.RegisterService(mspService))
-	sigService := sig.NewSignService(registry, nil, kvss)
+	sigService := sig.NewService(des, kvss)
 	assert.NoError(t, registry.RegisterService(sigService))
 
 	assert.NoError(t, mspService.Load())
@@ -84,20 +87,21 @@ func TestIdemixTypeFolder(t *testing.T) {
 func TestRegisterX509LocalMSP(t *testing.T) {
 	registry := registry2.New()
 
-	cp := &mock2.ConfigProvider{}
+	cp := &mock.ConfigProvider{}
 	cp.IsSetReturns(false)
 	assert.NoError(t, registry.RegisterService(cp))
-	kvss, err := kvs.New("memory", "", registry)
+	var sp view.ServiceProvider = registry
+	var dbDriver driver.Driver = &mem.Driver{}
+	kvss, err := kvs.NewWithConfig(dbDriver, "", view.GetConfigService(sp))
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(kvss))
-	des, err := sig.NewMultiplexDeserializer(registry)
-	assert.NoError(t, err)
+	des := sig.NewMultiplexDeserializer()
 	assert.NoError(t, registry.RegisterService(des))
-	config, err := config2.New(cp, "default", true)
+	config, err := config2.NewService(cp, "default", true)
 	assert.NoError(t, err)
-	mspService := msp2.NewLocalMSPManager(registry, config, nil, nil, nil, 100)
+	mspService := msp2.NewLocalMSPManager(config, kvss, nil, nil, nil, des, 100)
 	assert.NoError(t, registry.RegisterService(mspService))
-	sigService := sig.NewSignService(registry, nil, kvss)
+	sigService := sig.NewService(des, kvss)
 	assert.NoError(t, registry.RegisterService(sigService))
 
 	assert.NoError(t, mspService.RegisterX509MSP("apple", "./x509/testdata/msp", "x509"))
@@ -117,17 +121,18 @@ func TestX509TypeFolder(t *testing.T) {
 	cp, err := config.NewProvider("./testdata/x509typefolder")
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(cp))
-	kvss, err := kvs.New("memory", "", registry)
+	var sp view.ServiceProvider = registry
+	var dbDriver driver.Driver = &mem.Driver{}
+	kvss, err := kvs.NewWithConfig(dbDriver, "", view.GetConfigService(sp))
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(kvss))
-	des, err := sig.NewMultiplexDeserializer(registry)
-	assert.NoError(t, err)
+	des := sig.NewMultiplexDeserializer()
 	assert.NoError(t, registry.RegisterService(des))
-	config, err := config2.New(cp, "default", true)
+	config, err := config2.NewService(cp, "default", true)
 	assert.NoError(t, err)
-	mspService := msp2.NewLocalMSPManager(registry, config, nil, nil, nil, 100)
+	mspService := msp2.NewLocalMSPManager(config, kvss, nil, nil, nil, des, 100)
 	assert.NoError(t, registry.RegisterService(mspService))
-	sigService := sig.NewSignService(registry, nil, kvss)
+	sigService := sig.NewService(des, kvss)
 	assert.NoError(t, registry.RegisterService(sigService))
 
 	assert.NoError(t, mspService.Load())
@@ -144,17 +149,18 @@ func TestRefresh(t *testing.T) {
 	cp, err := config.NewProvider("./testdata/x509typefolder")
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(cp))
-	kvss, err := kvs.New("memory", "", registry)
+	var sp view.ServiceProvider = registry
+	var dbDriver driver.Driver = &mem.Driver{}
+	kvss, err := kvs.NewWithConfig(dbDriver, "", view.GetConfigService(sp))
 	assert.NoError(t, err)
 	assert.NoError(t, registry.RegisterService(kvss))
-	des, err := sig.NewMultiplexDeserializer(registry)
-	assert.NoError(t, err)
+	des := sig.NewMultiplexDeserializer()
 	assert.NoError(t, registry.RegisterService(des))
-	config, err := config2.New(cp, "default", true)
+	config, err := config2.NewService(cp, "default", true)
 	assert.NoError(t, err)
-	mspService := msp2.NewLocalMSPManager(registry, config, nil, nil, nil, 100)
+	mspService := msp2.NewLocalMSPManager(config, kvss, nil, nil, nil, des, 100)
 	assert.NoError(t, registry.RegisterService(mspService))
-	sigService := sig.NewSignService(registry, nil, kvss)
+	sigService := sig.NewService(des, kvss)
 	assert.NoError(t, registry.RegisterService(sigService))
 
 	assert.NoError(t, mspService.Load())

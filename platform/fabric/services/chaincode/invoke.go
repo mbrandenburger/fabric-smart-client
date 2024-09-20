@@ -7,7 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package chaincode
 
 import (
-	"github.com/pkg/errors"
+	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/fpc"
@@ -15,18 +15,23 @@ import (
 )
 
 type InvokeCall struct {
-	InvokerIdentity    view.Identity
-	Network            string
-	Channel            string
-	ChaincodePath      string
-	ChaincodeName      string
-	ChaincodeVersion   string
-	TransientMap       map[string]interface{}
-	Endorsers          []view.Identity
-	EndorsersMSPIDs    []string
-	EndorsersFromMyOrg bool
-	Function           string
-	Args               []interface{}
+	InvokerIdentity        view.Identity
+	Network                string
+	Channel                string
+	ChaincodePath          string
+	ChaincodeName          string
+	ChaincodeVersion       string
+	TransientMap           map[string]interface{}
+	EndorsersMSPIDs        []string
+	EndorsersFromMyOrg     bool
+	Function               string
+	Args                   []interface{}
+	MatchEndorsementPolicy bool
+	SetNumRetries          bool
+	NumRetries             uint
+	SetRetrySleep          bool
+	RetrySleep             time.Duration
+	TxID                   fabric.TxID
 }
 
 type invokeChaincodeView struct {
@@ -53,29 +58,26 @@ func (i *invokeChaincodeView) Call(context view.Context) (interface{}, error) {
 
 func (i *invokeChaincodeView) Invoke(context view.Context) (string, []byte, error) {
 	// TODO: endorse and then send to ordering
-	if len(i.ChaincodeName) == 0 {
-		return "", nil, errors.Errorf("no chaincode specified")
+	info := &info{
+		chaincodeName: i.ChaincodeName,
+		network:       i.Network,
+		channel:       i.Channel,
+		identitiy:     i.InvokerIdentity,
 	}
+	chaincode, err := getChaincode(context, info)
 
-	fNetwork := fabric.GetFabricNetworkService(context, i.Network)
-	if fNetwork == nil {
-		return "", nil, errors.Errorf("fabric network service [%s] not found", i.Network)
-	}
-	channel, err := fNetwork.Channel(i.Channel)
 	if err != nil {
-		return "", nil, errors.WithMessagef(err, "failed getting channel [%s:%s]", i.Network, i.Channel)
+		return "", nil, err
 	}
-	if i.InvokerIdentity.IsNone() {
-		i.InvokerIdentity = fNetwork.IdentityProvider().DefaultIdentity()
-	}
-	chaincode := channel.Chaincode(i.ChaincodeName)
-	if chaincode == nil {
-		return "", nil, errors.Errorf("fabric chaincode [%s:%s:%s] not found", i.Network, i.Channel, i.ChaincodeName)
-	}
+	i.InvokerIdentity = info.identitiy
+
 	if chaincode.IsPrivate() {
 		logger.Debugf("chaincode [%s:%s:%s] is a FPC", i.Network, i.Channel, i.ChaincodeName)
 		// This is a Fabric Private Chaincode, use the corresponding service
-		fpcChannel := fpc.GetChannel(context, i.Network, i.Channel)
+		fpcChannel, err := fpc.GetChannel(context, i.Network, i.Channel)
+		if err != nil {
+			return "", nil, err
+		}
 		res, err := fpcChannel.Chaincode(i.ChaincodeName).Invoke(i.Function, i.Args...).Call()
 		return "", res, err
 	} else {
@@ -86,14 +88,17 @@ func (i *invokeChaincodeView) Invoke(context view.Context) (string, []byte, erro
 	for k, v := range i.TransientMap {
 		invocation.WithTransientEntry(k, v)
 	}
-	if len(i.Endorsers) != 0 {
-		invocation.WithEndorsers(i.Endorsers...)
-	}
 	if len(i.EndorsersMSPIDs) != 0 {
 		invocation.WithEndorsersByMSPIDs(i.EndorsersMSPIDs...)
 	}
 	if i.EndorsersFromMyOrg {
 		invocation.WithEndorsersFromMyOrg()
+	}
+	if i.SetNumRetries {
+		invocation.WithNumRetries(i.NumRetries)
+	}
+	if i.SetRetrySleep {
+		invocation.WithRetrySleep(i.RetrySleep)
 	}
 
 	txid, result, err := invocation.Submit()
@@ -108,11 +113,6 @@ func (i *invokeChaincodeView) WithTransientEntry(k string, v interface{}) *invok
 		i.TransientMap = map[string]interface{}{}
 	}
 	i.TransientMap[k] = v
-	return i
-}
-
-func (i *invokeChaincodeView) WithEndorsers(ids ...view.Identity) *invokeChaincodeView {
-	i.InvokeCall.Endorsers = ids
 	return i
 }
 
@@ -138,5 +138,17 @@ func (i *invokeChaincodeView) WithEndorsersFromMyOrg() *invokeChaincodeView {
 
 func (i *invokeChaincodeView) WithSignerIdentity(id view.Identity) *invokeChaincodeView {
 	i.InvokerIdentity = id
+	return i
+}
+
+func (i *invokeChaincodeView) WithNumRetries(numRetries uint) *invokeChaincodeView {
+	i.SetNumRetries = true
+	i.NumRetries = numRetries
+	return i
+}
+
+func (i *invokeChaincodeView) WithRetrySleep(duration time.Duration) *invokeChaincodeView {
+	i.SetRetrySleep = true
+	i.RetrySleep = duration
 	return i
 }

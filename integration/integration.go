@@ -8,7 +8,6 @@ package integration
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"os/signal"
 	"path"
@@ -69,14 +68,15 @@ func New(startPort int, path string, topologies ...api.Topology) (*Infrastructur
 				return nil, err
 			}
 		}
+		logger.Infof("Instantiating Integration infrastructure at [%s -> %s]", path, testDir)
 	} else {
-		testDir, err = ioutil.TempDir("", "integration")
+		testDir, err = os.MkdirTemp("", "integration")
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	buildServer := common.NewBuildServer()
+	buildServer := common.NewBuildServer("-tags", "pkcs11")
 	buildServer.Serve()
 	builder := buildServer.Client()
 
@@ -140,15 +140,15 @@ func Clients(dir string, topologies ...api.Topology) (*Infrastructure, error) {
 	return n, nil
 }
 
-func (i *Infrastructure) ViewCmd(node *smartclient.Peer) commands.View {
+func (i *Infrastructure) ViewCmd(node *smartclient.Replica) commands.View {
 	p := i.Ctx.PlatformsByName[fsc.TopologyName].(*fsc.Platform)
 
 	return commands.View{
-		TLSCA:         path.Join(p.NodeLocalTLSDir(node), "ca.crt"),
-		UserCert:      p.LocalMSPIdentityCert(node),
-		UserKey:       p.LocalMSPPrivateKey(node),
+		TLSCA:         path.Join(p.NodeLocalTLSDir(node.Peer), "ca.crt"),
+		UserCert:      p.LocalMSPIdentityCert(node.Peer),
+		UserKey:       p.LocalMSPPrivateKey(node.Peer),
 		NetworkPrefix: p.NetworkID,
-		Server:        p.Context.ConnectionConfig(node.Name).Address,
+		Server:        p.Context.ConnectionConfig(node.UniqueName).Address,
 	}
 }
 
@@ -158,6 +158,7 @@ func (i *Infrastructure) RegisterPlatformFactory(factory api.PlatformFactory) {
 
 func (i *Infrastructure) Generate() {
 	if i.DeleteOnStart {
+		logger.Infof("Delete test folder [%s]", i.TestDir)
 		if err := os.RemoveAll(i.TestDir); err != nil {
 			panic(err)
 		}
@@ -185,10 +186,11 @@ func (i *Infrastructure) Start() {
 }
 
 func (i *Infrastructure) Stop() {
+	logger.Infof("stopping ...")
 	if i.NWO == nil {
 		panic("call generate or load first")
 	}
-	defer i.BuildServer.Shutdown()
+	defer i.BuildServer.Shutdown(i.DeleteOnStop)
 	if i.DeleteOnStop {
 		defer os.RemoveAll(i.TestDir)
 	}
@@ -221,12 +223,20 @@ func (i *Infrastructure) Serve() error {
 	return <-serve
 }
 
-func (i *Infrastructure) Client(name string) api.ViewClient {
+func (i *Infrastructure) Client(name string) api.GRPCClient {
 	if i.NWO == nil {
 		panic("call generate or load first")
 	}
 
 	return i.Ctx.ViewClients[name]
+}
+
+func (i *Infrastructure) WebClient(name string) api.WebClient {
+	if i.NWO == nil {
+		panic("call generate or load first")
+	}
+
+	return i.Ctx.WebClients[name]
 }
 
 func (i *Infrastructure) CLI(name string) api.ViewClient {
@@ -235,14 +245,6 @@ func (i *Infrastructure) CLI(name string) api.ViewClient {
 	}
 
 	return i.Ctx.ViewCLIs[name]
-}
-
-func (i *Infrastructure) Admin(name string) api.ViewClient {
-	if i.NWO == nil {
-		panic("call generate or load first")
-	}
-
-	return i.Ctx.ViewClients[name+".admin"]
 }
 
 func (i *Infrastructure) Identity(name string) view.Identity {
@@ -284,29 +286,39 @@ func (i *Infrastructure) initNWO() {
 	}
 	var platforms []api.Platform
 	var fscTopology api.Topology
+
 	for _, topology := range i.Topologies {
 		label := strings.ToLower(topology.Type())
 		switch label {
 		case "fsc":
-			// treat fsc as special
+			// treat fsc as last topo
 			fscTopology = topology
 			continue
 		default:
+			logger.Infof("Register %s", label)
 			factory, ok := i.PlatformFactories[label]
 			Expect(ok).To(BeTrue(), "expected to find platform [%s]", label)
 			platforms = append(platforms, factory.New(i.Ctx, topology, i.BuildServer.Client()))
 		}
 	}
+
 	// Add FSC platform
-	fcsPlatform := fsc.NewPlatform(i.Ctx, fscTopology, i.BuildServer.Client())
-	platforms = append(platforms, fcsPlatform)
+	if fscTopology != nil {
+		if _, ok := i.PlatformFactories["fsc"]; !ok {
+			i.RegisterPlatformFactory(&fscDefaultPlatformFactory{})
+		}
+		factory := i.PlatformFactories["fsc"]
+
+		fscPlatform := factory.New(i.Ctx, fscTopology, i.BuildServer.Client())
+		platforms = append(platforms, fscPlatform)
+		i.FscPlatform = fscPlatform.(*fsc.Platform)
+	}
 
 	// Register platforms to context
 	for _, platform := range platforms {
 		i.Ctx.AddPlatform(platform)
 	}
 	i.NWO = nwo.New(i.Ctx, platforms...)
-	i.FscPlatform = fcsPlatform
 }
 
 func (i *Infrastructure) storeAdditionalConfigurations() {
@@ -318,7 +330,7 @@ func (i *Infrastructure) storeAdditionalConfigurations() {
 	if err != nil {
 		panic(err)
 	}
-	if err := ioutil.WriteFile(filepath.Join(i.TestDir, "conf.json"), raw, 0770); err != nil {
+	if err := os.WriteFile(filepath.Join(i.TestDir, "conf.json"), raw, 0770); err != nil {
 		panic(err)
 	}
 
@@ -328,7 +340,7 @@ func (i *Infrastructure) storeAdditionalConfigurations() {
 	if err != nil {
 		panic(err)
 	}
-	if err := ioutil.WriteFile(filepath.Join(i.TestDir, "topology.yaml"), raw, 0770); err != nil {
+	if err := os.WriteFile(filepath.Join(i.TestDir, "topology.yaml"), raw, 0770); err != nil {
 		panic(err)
 	}
 }
@@ -347,4 +359,13 @@ func handleSignals(handlers map[os.Signal]func()) {
 	for sig := range signalChan {
 		handlers[sig]()
 	}
+}
+
+type fscDefaultPlatformFactory struct{}
+
+func (p *fscDefaultPlatformFactory) Name() string {
+	return "fsc"
+}
+func (p *fscDefaultPlatformFactory) New(registry api.Context, t api.Topology, builder api.Builder) api.Platform {
+	return fsc.NewPlatform(registry, t, builder)
 }

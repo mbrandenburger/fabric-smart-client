@@ -7,11 +7,12 @@ SPDX-License-Identifier: Apache-2.0
 package chaincode
 
 import (
-	"github.com/pkg/errors"
+	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/fpc"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
 )
 
 type queryChaincodeView struct {
@@ -37,9 +38,9 @@ func (i *queryChaincodeView) Query(context view.Context) ([]byte, error) {
 		return nil, errors.Errorf("no chaincode specified")
 	}
 
-	fNetwork := fabric.GetFabricNetworkService(context, i.Network)
-	if fNetwork == nil {
-		return nil, errors.Errorf("fabric network service [%s] not found", i.Network)
+	fNetwork, err := fabric.GetFabricNetworkService(context, i.Network)
+	if err != nil {
+		return nil, err
 	}
 	channel, err := fNetwork.Channel(i.Channel)
 	if err != nil {
@@ -53,7 +54,10 @@ func (i *queryChaincodeView) Query(context view.Context) ([]byte, error) {
 	stdChannelChaincode := channel.Chaincode(i.ChaincodeName)
 	if stdChannelChaincode.IsPrivate() {
 		// This is a Fabric Private Chaincode, use the corresponding service
-		fpcChannel := fpc.GetChannel(context, i.Network, i.Channel)
+		fpcChannel, err := fpc.GetChannel(context, i.Network, i.Channel)
+		if err != nil {
+			return nil, err
+		}
 		chaincode = &fpcChaincode{ch: fpcChannel.Chaincode(i.ChaincodeName)}
 		logger.Debugf("chaincode [%s:%s:%s] is a FPC", i.Network, i.Channel, i.ChaincodeName)
 	} else {
@@ -65,14 +69,20 @@ func (i *queryChaincodeView) Query(context view.Context) ([]byte, error) {
 	for k, v := range i.TransientMap {
 		invocation.WithTransientEntry(k, v)
 	}
-	if len(i.Endorsers) != 0 {
-		invocation.WithEndorsers(i.Endorsers...)
-	}
 	if len(i.EndorsersMSPIDs) != 0 {
 		invocation.WithEndorsersByMSPIDs(i.EndorsersMSPIDs...)
 	}
 	if i.EndorsersFromMyOrg {
 		invocation.WithEndorsersFromMyOrg()
+	}
+	if i.MatchEndorsementPolicy {
+		invocation.WithMatchEndorsementPolicy()
+	}
+	if i.SetNumRetries {
+		invocation.WithNumRetries(i.NumRetries)
+	}
+	if i.SetRetrySleep {
+		invocation.WithRetrySleep(i.RetrySleep)
 	}
 
 	return invocation.Call()
@@ -86,11 +96,6 @@ func (i *queryChaincodeView) WithTransientEntry(k string, v interface{}) *queryC
 	return i
 }
 
-func (i *queryChaincodeView) WithEndorsers(ids ...view.Identity) *queryChaincodeView {
-	i.InvokeCall.Endorsers = ids
-	return i
-}
-
 func (i *queryChaincodeView) WithNetwork(name string) *queryChaincodeView {
 	i.InvokeCall.Network = name
 	return i
@@ -98,6 +103,11 @@ func (i *queryChaincodeView) WithNetwork(name string) *queryChaincodeView {
 
 func (i *queryChaincodeView) WithChannel(name string) *queryChaincodeView {
 	i.InvokeCall.Channel = name
+	return i
+}
+
+func (i *queryChaincodeView) WithMatchEndorsementPolicy() *queryChaincodeView {
+	i.InvokeCall.MatchEndorsementPolicy = true
 	return i
 }
 
@@ -113,5 +123,17 @@ func (i *queryChaincodeView) WithEndorsersFromMyOrg() *queryChaincodeView {
 
 func (i *queryChaincodeView) WithSignerIdentity(id view.Identity) *queryChaincodeView {
 	i.InvokerIdentity = id
+	return i
+}
+
+func (i *queryChaincodeView) WithNumRetries(numRetries uint) *queryChaincodeView {
+	i.SetNumRetries = true
+	i.NumRetries = numRetries
+	return i
+}
+
+func (i *queryChaincodeView) WithRetrySleep(duration time.Duration) *queryChaincodeView {
+	i.SetRetrySleep = true
+	i.RetrySleep = duration
 	return i
 }

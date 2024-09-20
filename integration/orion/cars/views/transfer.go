@@ -31,9 +31,11 @@ type TransferView struct {
 }
 
 func (v *TransferView) Call(context view.Context) (interface{}, error) {
-	me := orion.GetDefaultONS(context).IdentityManager().Me()
+	ons, err := orion.GetDefaultONS(context)
+	assert.NoError(err)
+	me := ons.IdentityManager().Me()
 
-	tx, err := otx.NewTransaction(context, me, orion.GetDefaultONS(context).Name())
+	tx, err := otx.NewTransaction(context, me, ons.Name())
 	assert.NoError(err, "failed creating orion transaction")
 	tx.SetNamespace("cars") // Sets the namespace where the state should be stored
 
@@ -45,7 +47,7 @@ func (v *TransferView) Call(context view.Context) (interface{}, error) {
 	}
 	carKey := carRecord.Key()
 
-	recordBytes, _, err := tx.Get(carKey)
+	recordBytes, err := tx.Get(carKey)
 	if err != nil {
 		return nil, errors.Wrapf(err, "error getting car record, key: %s", carKey)
 	}
@@ -102,13 +104,15 @@ type BuyerFlow struct {
 }
 
 func (f *BuyerFlow) Call(context view.Context) (interface{}, error) {
-	me := orion.GetDefaultONS(context).IdentityManager().Me()
+	ons, err := orion.GetDefaultONS(context)
+	assert.NoError(err)
+	me := ons.IdentityManager().Me()
 
 	sellerSeesion := session.JSON(context)
 	var env []byte
 	assert.NoError(sellerSeesion.Receive(&env), "failed receiving envelope")
 
-	loadedTx, err := otx.NewLoadedTransaction(context, me, orion.GetDefaultONS(context).Name(), "cars", env)
+	loadedTx, err := otx.NewLoadedTransaction(context, me, ons.Name(), "cars", env)
 	assert.NoError(err, "failed creating orion loaded transaction")
 
 	if err = buyerValidateTransaction(loadedTx, me, "dmv"); err != nil {
@@ -140,13 +144,13 @@ func buyerValidateTransaction(loadedTx *otx.LoadedTransaction, buyerID, dmvID st
 	writes := loadedTx.Writes()
 	for _, dw := range writes {
 		switch {
-		case strings.HasPrefix(dw.GetKey(), states.CarRecordKeyPrefix):
-			if err := json.Unmarshal(dw.GetValue(), newCarRec); err != nil {
+		case strings.HasPrefix(dw.Key, states.CarRecordKeyPrefix):
+			if err := json.Unmarshal(dw.Value, newCarRec); err != nil {
 				return err
 			}
-			newCarACL = dw.Acl
+			newCarACL = dw.Acl.(*types.AccessControl)
 		default:
-			return errors.Errorf("unexpected write key: %s", dw.GetKey())
+			return errors.Errorf("unexpected write key: %s", dw.Key)
 		}
 	}
 	if newCarRec.Owner != buyerID {
@@ -188,16 +192,18 @@ type DMVFlow struct {
 }
 
 func (f *DMVFlow) Call(context view.Context) (interface{}, error) {
-	me := orion.GetDefaultONS(context).IdentityManager().Me()
+	ons, err := orion.GetDefaultONS(context)
+	assert.NoError(err)
+	me := ons.IdentityManager().Me()
 
 	buyerSession := session.JSON(context)
 	var env []byte
 	assert.NoError(buyerSession.Receive(&env), "failed receiving envelope")
 
-	loadedTx, err := otx.NewLoadedTransaction(context, me, orion.GetDefaultONS(context).Name(), "cars", env)
+	loadedTx, err := otx.NewLoadedTransaction(context, me, ons.Name(), "cars", env)
 	assert.NoError(err, "failed creating orion loaded transaction")
 
-	tx, err := otx.NewTransaction(context, me, orion.GetDefaultONS(context).Name())
+	tx, err := otx.NewTransaction(context, me, ons.Name())
 	assert.NoError(err, "failed creating orion transaction")
 	tx.SetNamespace("cars") // Sets the namespace where the state should be stored
 
@@ -218,17 +224,17 @@ func dmvValidateTransaction(tx *otx.Transaction, loadedTx *otx.LoadedTransaction
 	carRec := &states.CarRecord{}
 	reads := loadedTx.Reads()
 	for _, dr := range reads {
-		recordBytes, _, err := tx.Get(dr.GetKey())
+		recordBytes, err := tx.Get(dr.Key)
 		if err != nil {
 			return err
 		}
 		switch {
-		case strings.HasPrefix(dr.GetKey(), states.CarRecordKeyPrefix):
+		case strings.HasPrefix(dr.Key, states.CarRecordKeyPrefix):
 			if err = json.Unmarshal(recordBytes, carRec); err != nil {
 				return err
 			}
 		default:
-			return errors.Errorf("unexpected read key: %s", dr.GetKey())
+			return errors.Errorf("unexpected read key: %s", dr.Key)
 		}
 	}
 
@@ -237,13 +243,13 @@ func dmvValidateTransaction(tx *otx.Transaction, loadedTx *otx.LoadedTransaction
 	writes := loadedTx.Writes()
 	for _, dw := range writes {
 		switch {
-		case strings.HasPrefix(dw.GetKey(), states.CarRecordKeyPrefix):
-			if err := json.Unmarshal(dw.GetValue(), newCarRec); err != nil {
+		case strings.HasPrefix(dw.Key, states.CarRecordKeyPrefix):
+			if err := json.Unmarshal(dw.Value, newCarRec); err != nil {
 				return err
 			}
-			newCarACL = dw.Acl
+			newCarACL = dw.Acl.(*types.AccessControl)
 		default:
-			return errors.Errorf("unexpected write key: %s", dw.GetKey())
+			return errors.Errorf("unexpected write key: %s", dw.Key)
 		}
 	}
 

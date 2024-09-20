@@ -7,83 +7,33 @@ SPDX-License-Identifier: Apache-2.0
 package kvs_test
 
 import (
-	"io/ioutil"
+	"fmt"
 	"os"
+	"sync"
 	"testing"
-	"time"
 
-	_ "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/badger"
-	_ "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/memory"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/sql/sqlite"
+
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/sql/postgres"
+
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/badger"
+	mem "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/memory"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
-
-	"github.com/stretchr/testify/assert"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/kvs"
-	registry2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/registry"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/kvs/mock"
+	"github.com/stretchr/testify/assert"
 )
-
-// TODO replace fakeProv some autogenerate mock like we use in platform/fabric/core/generic/msp/mock/config_provider
-type fakeProv struct {
-	typ       string
-	path      string
-	cacheSize int
-}
-
-func (f *fakeProv) GetString(key string) string {
-	return f.typ
-}
-
-func (f *fakeProv) GetInt(key string) int {
-	return f.cacheSize
-}
-
-func (f *fakeProv) GetDuration(key string) time.Duration {
-	return time.Duration(0)
-}
-
-func (f *fakeProv) GetBool(key string) bool {
-	return false
-}
-
-func (f *fakeProv) GetStringSlice(key string) []string {
-	return nil
-}
-
-func (f *fakeProv) IsSet(key string) bool {
-	return false
-}
-
-func (f *fakeProv) UnmarshalKey(key string, rawVal interface{}) error {
-	*(rawVal.(*kvs.Opts)) = kvs.Opts{
-		Path: f.path,
-	}
-
-	return nil
-}
-
-func (f *fakeProv) ConfigFileUsed() string {
-	return ""
-}
-
-func (f *fakeProv) GetPath(key string) string {
-	return ""
-}
-
-func (f *fakeProv) TranslatePath(path string) string {
-	return ""
-}
 
 type stuff struct {
 	S string `json:"s"`
 	I int    `json:"i"`
 }
 
-func testRound(t *testing.T, cfg *fakeProv) {
-	registry := registry2.New()
-	registry.RegisterService(cfg)
-
-	kvstore, err := kvs.New(cfg.typ, "_default", registry)
+func testRound(t *testing.T, driver driver.Driver, cp kvs.ConfigProvider) {
+	kvstore, err := kvs.NewWithConfig(driver, "_default", cp)
 	assert.NoError(t, err)
+	defer kvstore.Stop()
 
 	k1, err := kvs.CreateCompositeKey("k", []string{"1"})
 	assert.NoError(t, err)
@@ -157,13 +107,99 @@ func testRound(t *testing.T, cfg *fakeProv) {
 	assert.False(t, kvstore.Exists(k))
 }
 
+func testParallelWrites(t *testing.T, driver driver.Driver, cp kvs.ConfigProvider) {
+	kvstore, err := kvs.NewWithConfig(driver, "_default", cp)
+	assert.NoError(t, err)
+	defer kvstore.Stop()
+
+	// different keys
+	wg := sync.WaitGroup{}
+	n := 100
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			k1, err := kvs.CreateCompositeKey("parallel_key_1_", []string{fmt.Sprintf("%d", i)})
+			assert.NoError(t, err)
+			err = kvstore.Put(k1, &stuff{"santa", i})
+			assert.NoError(t, err)
+			defer wg.Done()
+		}(i)
+	}
+	wg.Wait()
+
+	// same key
+	wg = sync.WaitGroup{}
+	wg.Add(n)
+	k1, err := kvs.CreateCompositeKey("parallel_key_2_", []string{"1"})
+	assert.NoError(t, err)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			err = kvstore.Put(k1, &stuff{"santa", 1})
+			assert.NoError(t, err)
+			defer wg.Done()
+		}(i)
+	}
+	wg.Wait()
+}
+
 func TestBadgerKVS(t *testing.T) {
-	path, err := ioutil.TempDir(os.TempDir(), "kvstest-*")
+	path, err := os.MkdirTemp(os.TempDir(), "kvstest-*")
 	assert.NoError(t, err)
 	defer os.RemoveAll(path)
-	testRound(t, &fakeProv{typ: "badger", path: path, cacheSize: 5})
+
+	cp := &mock.ConfigProvider{}
+	cp.UnmarshalKeyStub = func(s string, i interface{}) error {
+		_, ok := i.(*badger.Opts)
+		if ok {
+			*(i.(*badger.Opts)) = badger.Opts{
+				Path: path,
+			}
+		}
+		return nil
+	}
+	cp.IsSetReturns(false)
+	d := &badger.Driver{}
+	testRound(t, d, cp)
+	testParallelWrites(t, d, cp)
 }
 
 func TestMemoryKVS(t *testing.T) {
-	testRound(t, &fakeProv{typ: "memory", cacheSize: 0})
+	cp := &mock.ConfigProvider{}
+	d := &mem.Driver{}
+	testRound(t, d, cp)
+	testParallelWrites(t, d, cp)
+}
+
+func TestSQLiteKVS(t *testing.T) {
+	cp := &mock.ConfigProvider{}
+	d := &sqlite.TestDriver{
+		Name:    "sqlite_test",
+		TempDir: t.TempDir(),
+	}
+	testRound(t, d, cp)
+	testParallelWrites(t, d, cp)
+}
+
+func TestPostgresKVS(t *testing.T) {
+	if os.Getenv("TEST_POSTGRES") != "true" {
+		t.Skip("set environment variable TEST_POSTGRES to true to include postgres test")
+	}
+	if testing.Short() {
+		t.Skip("skipping postgres test in short mode")
+	}
+	t.Log("starting postgres")
+	terminate, pgConnStr, err := postgres.StartPostgres(t, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer terminate()
+	t.Log("postgres ready")
+
+	cp := &mock.ConfigProvider{}
+	d := &postgres.TestDriver{
+		Name:    "hw",
+		ConnStr: pgConnStr,
+	}
+	testRound(t, d, cp)
+	testParallelWrites(t, d, cp)
 }

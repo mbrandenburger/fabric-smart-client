@@ -11,13 +11,13 @@ import (
 	"encoding/base64"
 	"encoding/json"
 
+	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils"
+
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
-
-	"github.com/pkg/errors"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/endorser"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
 )
 
 var logger = flogging.MustGetLogger("fabric-sdk.state")
@@ -27,10 +27,6 @@ type EndorseTransaction interface {
 
 type MetaHandler interface {
 	StoreMeta(ns *Namespace, s interface{}, namespace string, key string, options *addOutputOptions) error
-}
-
-type ViewManager interface {
-	InitiateView(view view.View) (interface{}, error)
 }
 
 // Command models an operation that involve given business parties
@@ -95,7 +91,7 @@ func (n *Namespace) Present() bool {
 
 // SetNamespace sets the name of this namespace
 func (n *Namespace) SetNamespace(ns string) {
-	n.tx.SetProposal(ns, "Version-0.0", "_state")
+	n.tx.SetProposal(ns, "", "_state")
 }
 
 // AddCommand appends a new Command to this namespace
@@ -478,14 +474,14 @@ func (n *Namespace) getStateID(s interface{}) (string, error) {
 		}
 	case LinearState:
 		logger.Debugf("LinearState...")
-		key = GenerateUUID()
+		key = utils.GenerateUUID()
 		key = d.SetLinearID(key)
 	case EmbeddingState:
 		logger.Debugf("EmbeddingState...")
 		return n.getStateID(d.GetState())
 	default:
 		logger.Debugf("default...")
-		key = base64.StdEncoding.EncodeToString(GenerateBytesUUID())
+		key = base64.StdEncoding.EncodeToString(utils.GenerateBytesUUID())
 	}
 	return key, nil
 }

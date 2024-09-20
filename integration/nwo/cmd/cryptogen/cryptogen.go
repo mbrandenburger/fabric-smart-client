@@ -10,13 +10,13 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"text/template"
 
 	ca2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/cmd/cryptogen/ca"
 	msp2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/cmd/cryptogen/msp"
+	"github.com/pkg/errors"
 	"gopkg.in/yaml.v2"
 )
 
@@ -207,16 +207,16 @@ func getConfig() (*Config, error) {
 	var configData string
 
 	if genConfigFile != "" {
-		data, err := ioutil.ReadFile(genConfigFile)
+		data, err := os.ReadFile(genConfigFile)
 		if err != nil {
-			return nil, fmt.Errorf("error reading configuration: %s", err)
+			return nil, errors.Errorf("error reading configuration: %s", err)
 		}
 
 		configData = string(data)
 	} else if extConfigFile != "" {
-		data, err := ioutil.ReadFile(extConfigFile)
+		data, err := os.ReadFile(extConfigFile)
 		if err != nil {
-			return nil, fmt.Errorf("error reading configuration: %s", err)
+			return nil, errors.Errorf("error reading configuration: %s", err)
 		}
 
 		configData = string(data)
@@ -227,7 +227,7 @@ func getConfig() (*Config, error) {
 	config := &Config{}
 	err := yaml.Unmarshal([]byte(configData), &config)
 	if err != nil {
-		return nil, fmt.Errorf("error Unmarshaling YAML: %s", err)
+		return nil, errors.Errorf("error Unmarshaling YAML: %s", err)
 	}
 
 	return config, nil
@@ -263,13 +263,13 @@ func parseTemplate(input string, data interface{}) (string, error) {
 
 	t, err := template.New("parse").Parse(input)
 	if err != nil {
-		return "", fmt.Errorf("error parsing template: %s", err)
+		return "", errors.Errorf("error parsing template: %s", err)
 	}
 
 	output := new(bytes.Buffer)
 	err = t.Execute(output, data)
 	if err != nil {
-		return "", fmt.Errorf("error executing template: %s", err)
+		return "", errors.Errorf("error executing template: %s", err)
 	}
 
 	return output.String(), nil
@@ -480,7 +480,7 @@ func generateNodes(baseDir string, nodes []NodeSpec, signCA *ca2.CA, tlsCA *ca2.
 			if node.isAdmin && nodeOUs {
 				currentNodeType = msp2.ADMIN
 			}
-			err := msp2.GenerateLocalMSP(nodeDir, node.CommonName, node.SANS, signCA, tlsCA, currentNodeType, nodeOUs, node.HSM)
+			err := msp2.GenerateLocalMSP(nodeDir, node.CommonName, node.SANS, signCA, tlsCA, currentNodeType, nodeOUs, node.HSM, nil)
 			if err != nil {
 				fmt.Printf("Error generating local MSP for %v:\n%v\n", node, err)
 				os.Exit(1)

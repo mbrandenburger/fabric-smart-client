@@ -8,6 +8,13 @@ package driver
 
 import (
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/hyperledger/fabric-protos-go/common"
+)
+
+type TransactionType int32
+
+const (
+	EndorserTransaction = TransactionType(common.HeaderType_ENDORSER_TRANSACTION)
 )
 
 type Envelope interface {
@@ -17,6 +24,7 @@ type Envelope interface {
 	Results() []byte
 	Bytes() ([]byte, error)
 	FromBytes(raw []byte) error
+	String() string
 }
 
 type ProposalResponse interface {
@@ -26,6 +34,7 @@ type ProposalResponse interface {
 	Results() []byte
 	ResponseStatus() int32
 	ResponseMessage() string
+	Bytes() ([]byte, error)
 }
 
 type Proposal interface {
@@ -43,7 +52,7 @@ type MetadataService interface {
 
 type EnvelopeService interface {
 	Exists(txid string) bool
-	StoreEnvelope(txid string, env []byte) error
+	StoreEnvelope(txid string, env interface{}) error
 	LoadEnvelope(txid string) ([]byte, error)
 }
 
@@ -53,22 +62,21 @@ type EndorserTransactionService interface {
 	LoadTransaction(txid string) ([]byte, error)
 }
 
+type TransactionFactory interface {
+	NewTransaction(channel string, nonce []byte, creator []byte, txid string, rawRequest []byte) (Transaction, error)
+}
+
 type TransactionManager interface {
 	ComputeTxID(id *TxID) string
 	NewEnvelope() Envelope
 	NewProposalResponseFromBytes(raw []byte) (ProposalResponse, error)
-	NewTransaction(creator view.Identity, nonce []byte, txid string, channel string) (Transaction, error)
+	NewTransaction(transactionType TransactionType, creator view.Identity, nonce []byte, txid string, channel string, rawRequest []byte) (Transaction, error)
 	NewTransactionFromBytes(channel string, raw []byte) (Transaction, error)
-}
-
-// Verifier is an interface which wraps the Verify method.
-type Verifier interface {
-	// Verify verifies the signature over the passed message.
-	Verify(message, sigma []byte) error
-}
-
-type Signer interface {
-	Sign(message []byte) ([]byte, error)
+	NewTransactionFromEnvelopeBytes(channel string, raw []byte) (Transaction, error)
+	AddTransactionFactory(tt TransactionType, factory TransactionFactory)
+	NewProcessedTransactionFromEnvelopePayload(envelopePayload []byte) (ProcessedTransaction, int32, error)
+	NewProcessedTransactionFromEnvelopeRaw(envelope []byte) (ProcessedTransaction, error)
+	NewProcessedTransaction(pt []byte) (ProcessedTransaction, error)
 }
 
 type Transaction interface {
@@ -113,6 +121,7 @@ type Transaction interface {
 	ProposalResponses() []ProposalResponse
 	ProposalResponse() ([]byte, error)
 	BytesNoTransient() ([]byte, error)
+	Envelope() (Envelope, error)
 }
 
 type SignedProposal interface {

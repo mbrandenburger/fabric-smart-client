@@ -7,11 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 package orion
 
 import (
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/context"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/orion/opts"
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/api"
-	orion "github.com/hyperledger-labs/fabric-smart-client/platform/orion/sdk"
 )
 
 const (
@@ -30,8 +30,8 @@ func WithRole(role string) node.Option {
 }
 
 type DB struct {
-	Name  string
-	Roles []string
+	Name  string   `yaml:"name,omitempty"`
+	Roles []string `yaml:"roles,omitempty"`
 }
 
 type Topology struct {
@@ -47,6 +47,10 @@ func NewTopology() *Topology {
 	}
 }
 
+func (t *Topology) SetName(name string) {
+	t.TopologyName = name
+}
+
 func (t *Topology) Name() string {
 	return t.TopologyName
 }
@@ -55,19 +59,35 @@ func (t *Topology) Type() string {
 	return t.TopologyType
 }
 
-func (t *Topology) SetDefaultSDK(fscTopology *fsc.Topology) {
-	t.SetSDK(fscTopology, &orion.SDK{})
-}
-
 func (t *Topology) SetSDK(fscTopology *fsc.Topology, sdk api.SDK) {
 	for _, node := range fscTopology.Nodes {
 		node.AddSDK(sdk)
 	}
 }
 
-func (t *Topology) AddDB(name string, dbs ...string) {
+func (t *Topology) SetSDKOnNodes(sdk api.SDK, nodes ...*node.Node) {
+	for _, node := range nodes {
+		node.AddSDK(sdk)
+	}
+}
+
+func (t *Topology) AddDB(name string, roles ...string) {
 	t.DBs = append(t.DBs, DB{
 		Name:  name,
-		Roles: dbs,
+		Roles: roles,
 	})
+}
+
+// Network returns the orion network from the passed context bound to the passed id.
+// It returns nil, if nothing is found
+func Network(ctx *context.Context, id string) *Platform {
+	p := ctx.PlatformByName(id)
+	if p == nil {
+		return nil
+	}
+	fp, ok := p.(*Platform)
+	if ok {
+		return fp
+	}
+	return nil
 }

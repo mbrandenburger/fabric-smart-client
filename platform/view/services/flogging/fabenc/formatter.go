@@ -15,13 +15,14 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/pkg/errors"
 	"go.uber.org/zap/zapcore"
 )
 
 // formatRegexp is broken into three groups:
-//   1. the format verb
-//   2. an optional colon that is ungrouped with '?:'
-//   3. an optional, non-greedy format directive
+//  1. the format verb
+//  2. an optional colon that is ungrouped with '?:'
+//  3. an optional, non-greedy format directive
 //
 // The grouping simplifies the verb proccssing during spec parsing.
 var formatRegexp = regexp.MustCompile(`%{(color|id|level|message|module|shortfunc|time)(?::(.*?))?}`)
@@ -44,7 +45,6 @@ var formatRegexp = regexp.MustCompile(`%{(color|id|level|message|module|shortfun
 //   - level: a fmt style string formatter without the leading %
 //   - message: a fmt style string formatter without the leading %
 //   - module: a fmt style string formatter without the leading %
-//
 func ParseFormat(spec string) ([]Formatter, error) {
 	cursor := 0
 	formatters := []Formatter{}
@@ -143,7 +143,7 @@ func NewFormatter(verb, format string) (Formatter, error) {
 	case "time":
 		return newTimeFormatter(format), nil
 	default:
-		return nil, fmt.Errorf("unknown verb: %s", verb)
+		return nil, errors.Errorf("unknown verb: %s", verb)
 	}
 }
 
@@ -162,7 +162,7 @@ func newColorFormatter(f string) (ColorFormatter, error) {
 	case "":
 		return ColorFormatter{}, nil
 	default:
-		return ColorFormatter{}, fmt.Errorf("invalid color option: %s", f)
+		return ColorFormatter{}, errors.Errorf("invalid color option: %s", f)
 	}
 }
 

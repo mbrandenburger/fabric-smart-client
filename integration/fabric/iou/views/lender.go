@@ -6,6 +6,8 @@ SPDX-License-Identifier: Apache-2.0
 package views
 
 import (
+	"time"
+
 	"github.com/pkg/errors"
 
 	"github.com/hyperledger-labs/fabric-smart-client/integration/fabric/iou/states"
@@ -61,7 +63,7 @@ func (i *CreateIOUResponderView) Call(context view.Context) (interface{}, error)
 	assert.NoError(err)
 
 	// Finally, the lender waits that the transaction completes its lifecycle
-	return context.RunView(state.NewFinalityView(tx))
+	return context.RunView(state.NewFinalityWithTimeoutView(tx, 1*time.Minute))
 }
 
 type UpdateIOUResponderView struct{}
@@ -100,12 +102,14 @@ func (i *UpdateIOUResponderView) Call(context view.Context) (interface{}, error)
 		assert.True(inState.Owners().Match(outState.Owners()), "invalid owners, input and output should have the same owners")
 		assert.Equal(2, inState.Owners().Count(), "invalid state, expected 2 identities, was [%d]", inState.Owners().Count())
 		// Is the lender one of the owners?
-		lenderFound := fabric.GetDefaultLocalMembership(context).IsMe(inState.Owners()[0]) != fabric.GetDefaultLocalMembership(context).IsMe(inState.Owners()[1])
+		fns, err := fabric.GetDefaultFNS(context)
+		assert.NoError(err)
+		lenderFound := fns.LocalMembership().IsMe(inState.Owners()[0]) != fns.LocalMembership().IsMe(inState.Owners()[1])
 		assert.True(lenderFound, "lender identity not found")
 		// Did the borrower sign?
 		assert.NoError(tx.HasBeenEndorsedBy(inState.Owners().Filter(
 			func(identity view.Identity) bool {
-				return !fabric.GetDefaultLocalMembership(context).IsMe(identity)
+				return !fns.LocalMembership().IsMe(identity)
 			})...), "the borrower has not endorsed")
 	default:
 		return nil, errors.Errorf("invalid command, expected [create], was [%s]", command.Name)
@@ -116,5 +120,5 @@ func (i *UpdateIOUResponderView) Call(context view.Context) (interface{}, error)
 	assert.NoError(err)
 
 	// Finally, the lender waits that the transaction completes its lifecycle
-	return context.RunView(state.NewFinalityView(tx))
+	return context.RunView(state.NewFinalityWithTimeoutView(tx, 1*time.Minute))
 }

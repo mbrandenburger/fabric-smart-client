@@ -7,6 +7,7 @@ SPDX-License-Identifier: Apache-2.0
 package manager_test
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -15,17 +16,19 @@ import (
 	mock2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/core/manager/mock"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/driver/mock"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/metrics/disabled"
 	registry2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/registry"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 	"github.com/stretchr/testify/assert"
+	"go.opentelemetry.io/otel/trace/noop"
 )
 
 type Manager interface {
-	InitiateView(f view.View) (interface{}, error)
+	InitiateView(f view.View, ctx context.Context) (interface{}, error)
 	Context(id string) (view.Context, error)
 	RegisterFactory(id string, factory driver.Factory) error
 	NewView(id string, in []byte) (f view.View, err error)
-	Initiate(id string) (interface{}, error)
+	Initiate(id string, ctx context.Context) (interface{}, error)
 	RegisterResponderWithIdentity(responder view.View, id view.Identity, initiatedBy interface{}) error
 }
 
@@ -59,11 +62,7 @@ func TestGetIdentifier(t *testing.T) {
 	registry := registry2.New()
 	idProvider := &mock.IdentityProvider{}
 	idProvider.DefaultIdentityReturns([]byte("alice"))
-	assert.NoError(t, registry.RegisterService(idProvider))
-	assert.NoError(t, registry.RegisterService(&mock2.CommLayer{}))
-	assert.NoError(t, registry.RegisterService(&mock.EndpointService{}))
-	assert.NoError(t, registry.RegisterService(&mock2.SessionFactory{}))
-	manager := manager.New(registry)
+	manager := manager.New(registry, &mock2.CommLayer{}, &mock.EndpointService{}, idProvider, noop.NewTracerProvider(), &disabled.Provider{})
 
 	assert.Equal(t, "github.com/hyperledger-labs/fabric-smart-client/platform/view/core/manager_test/DummyView", manager.GetIdentifier(DummyView{}))
 	assert.Equal(t, "github.com/hyperledger-labs/fabric-smart-client/platform/view/core/manager_test/DummyView", manager.GetIdentifier(&DummyView{}))
@@ -79,7 +78,7 @@ func TestManagerRace(t *testing.T) {
 	assert.NoError(t, registry.RegisterService(&mock2.CommLayer{}))
 	assert.NoError(t, registry.RegisterService(&mock.EndpointService{}))
 	assert.NoError(t, registry.RegisterService(&mock2.SessionFactory{}))
-	manager := manager.New(registry)
+	manager := manager.New(registry, &mock2.CommLayer{}, &mock.EndpointService{}, idProvider, noop.NewTracerProvider(), &disabled.Provider{})
 
 	wg := &sync.WaitGroup{}
 	for i := 0; i < 100; i++ {
@@ -98,12 +97,8 @@ func TestRegisterResponderWithInitiatorView(t *testing.T) {
 	registry := registry2.New()
 	idProvider := &mock.IdentityProvider{}
 	idProvider.DefaultIdentityReturns([]byte("alice"))
-	assert.NoError(t, registry.RegisterService(idProvider))
-	assert.NoError(t, registry.RegisterService(&mock2.CommLayer{}))
-	assert.NoError(t, registry.RegisterService(&mock.EndpointService{}))
-	assert.NoError(t, registry.RegisterService(&mock2.SessionFactory{}))
 
-	manager := manager.New(registry)
+	manager := manager.New(registry, &mock2.CommLayer{}, &mock.EndpointService{}, idProvider, noop.NewTracerProvider(), &disabled.Provider{})
 	err := manager.RegisterResponder(&ResponderView{}, &InitiatorView{})
 	assert.NoError(t, err)
 	responder, _, err := manager.ExistResponderForCaller(manager.GetIdentifier(&InitiatorView{}))
@@ -118,12 +113,8 @@ func TestRegisterResponderWithViewIdentifier(t *testing.T) {
 	registry := registry2.New()
 	idProvider := &mock.IdentityProvider{}
 	idProvider.DefaultIdentityReturns([]byte("alice"))
-	assert.NoError(t, registry.RegisterService(idProvider))
-	assert.NoError(t, registry.RegisterService(&mock2.CommLayer{}))
-	assert.NoError(t, registry.RegisterService(&mock.EndpointService{}))
-	assert.NoError(t, registry.RegisterService(&mock2.SessionFactory{}))
 
-	manager := manager.New(registry)
+	manager := manager.New(registry, &mock2.CommLayer{}, &mock.EndpointService{}, idProvider, noop.NewTracerProvider(), &disabled.Provider{})
 	err := manager.RegisterResponder(&ResponderView{}, manager.GetIdentifier(&InitiatorView{}))
 	assert.NoError(t, err)
 	responder, _, err := manager.ExistResponderForCaller(manager.GetIdentifier(&InitiatorView{}))
@@ -146,7 +137,7 @@ func registerResponder(t *testing.T, wg *sync.WaitGroup, m Manager) {
 }
 
 func callView(t *testing.T, wg *sync.WaitGroup, m Manager) {
-	_, err := m.InitiateView(&DummyView{})
+	_, err := m.InitiateView(&DummyView{}, context.Background())
 	wg.Done()
 	assert.NoError(t, err)
 }
@@ -158,7 +149,7 @@ func newView(t *testing.T, wg *sync.WaitGroup, m Manager) {
 }
 
 func initiateView(t *testing.T, wg *sync.WaitGroup, m Manager) {
-	_, err := m.Initiate(manager.GenerateUUID())
+	_, err := m.Initiate(manager.GenerateUUID(), context.Background())
 	wg.Done()
 	assert.Error(t, err)
 }

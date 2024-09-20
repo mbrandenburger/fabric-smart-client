@@ -9,6 +9,7 @@ package topology
 import (
 	"fmt"
 
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/config"
 )
 
@@ -56,7 +57,9 @@ type Consortium struct {
 
 // Consensus indicates the orderer types (we only support SOLO for testing)
 type Consensus struct {
-	Type string `yaml:"type,omitempty"`
+	Type                        string `yaml:"type,omitempty"`
+	BootstrapMethod             string `yaml:"bootstrap_method,omitempty"`
+	ChannelParticipationEnabled bool   `yaml:"channel_participation_enabled,omitempty"`
 }
 
 // The SystemChannel declares the name of the network system channel and its
@@ -78,6 +81,7 @@ type Channel struct {
 type Orderer struct {
 	Name         string `yaml:"name,omitempty"`
 	Organization string `yaml:"organization,omitempty"`
+	Id           int    `yaml:"id,omitempty"`
 }
 
 // ID provides a unique identifier for an orderer instance.
@@ -142,13 +146,18 @@ type Peer struct {
 	Organization    string          `yaml:"organization,omitempty"`
 	Type            PeerType        `yaml:"type,omitempty"`
 	Bootstrap       bool            `yaml:"bootstrap,omitempty"`
-	ExecutablePath  string          `yaml:"executablepath,omitempty"`
 	Role            string          `yaml:"role,omitempty"`
 	Channels        []*PeerChannel  `yaml:"channels,omitempty"`
 	DefaultIdentity string          `yaml:"defaultMSP,omitempty"`
 	Identities      []*PeerIdentity `yaml:"identities,omitempty"`
+	Usage           string          `yaml:"usage,omitempty"`
+	SkipInit        bool            `yaml:"skipinit,omitempty"`
+	SkipRunning     bool            `yaml:"skiprunning,omitempty"`
+	TLSDisabled     bool            `yaml:"tlsdisabled,omitempty"`
+	Hostname        string          `yaml:"hostname,omitempty"`
 	DevMode         bool
-	DefaultNetwork  bool `yaml:"-"`
+	DefaultNetwork  bool       `yaml:"-"`
+	FSCNode         *node.Node `yaml:"-"`
 }
 
 // ID provides a unique identifier for a peer instance.

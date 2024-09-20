@@ -8,8 +8,12 @@ package views
 
 import (
 	"encoding/json"
+	"sync"
+	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/integration/fabric/iou/states"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/state"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/assert"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
@@ -64,9 +68,19 @@ func (i *CreateIOUView) Call(context view.Context) (interface{}, error) {
 	_, err = context.RunView(state.NewCollectEndorsementsView(tx, borrower, lender, i.Approver))
 	assert.NoError(err)
 
-	// At this point the borrower can send the transaction to the ordering service and wait for finality.
-	_, err = context.RunView(state.NewOrderingAndFinalityView(tx))
+	// Check committer events
+	var wg sync.WaitGroup
+	wg.Add(1)
+	_, ch, err := fabric.GetDefaultChannel(context)
 	assert.NoError(err)
+	committer := ch.Committer()
+	assert.NoError(err, committer.AddFinalityListener(tx.ID(), NewFinalityListener(tx.ID(), driver.Valid, &wg)), "failed to add committer listener")
+
+	// At this point the borrower can send the transaction to the ordering service and wait for finality.
+	_, err = context.RunView(state.NewOrderingAndFinalityWithTimeoutView(tx, 1*time.Minute))
+	assert.NoError(err)
+
+	wg.Wait()
 
 	// Return the state ID
 	return iou.LinearID, nil
@@ -122,9 +136,23 @@ func (u UpdateIOUView) Call(context view.Context) (interface{}, error) {
 	_, err = context.RunView(state.NewCollectEndorsementsView(tx, iouState.Owners()[0], iouState.Owners()[1], u.Approver))
 	assert.NoError(err)
 
+	// Check committer events
+	var wg sync.WaitGroup
+	wg.Add(1)
+	_, ch, err := fabric.GetDefaultChannel(context)
+	assert.NoError(err)
+	committer := ch.Committer()
+	assert.NoError(err, committer.AddFinalityListener(tx.ID(), NewFinalityListener(tx.ID(), driver.Valid, &wg)), "failed to add committer listener")
+
 	// At this point the borrower can send the transaction to the ordering service and wait for finality.
-	_, err = context.RunView(state.NewOrderingAndFinalityView(tx))
+	_, err = context.RunView(state.NewOrderingAndFinalityWithTimeoutView(tx, 1*time.Minute))
 	assert.NoError(err, "failed ordering and finalizing")
+	wg.Wait()
+
+	wg = sync.WaitGroup{}
+	wg.Add(1)
+	assert.NoError(err, committer.AddFinalityListener(tx.ID(), NewFinalityListener(tx.ID(), driver.Valid, &wg)), "failed to add committer listener")
+	wg.Wait()
 
 	return tx.ID(), nil
 }

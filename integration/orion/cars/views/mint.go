@@ -36,8 +36,10 @@ func (v *MintRequestView) Call(context view.Context) (interface{}, error) {
 }
 
 func (v *MintRequestView) prepareRequest(context view.Context) *states.MintRequestRecord {
-	me := orion.GetDefaultONS(context).IdentityManager().Me()
-	tx, err := otx.NewTransaction(context, me, orion.GetDefaultONS(context).Name())
+	ons, err := orion.GetDefaultONS(context)
+	assert.NoError(err)
+	me := ons.IdentityManager().Me()
+	tx, err := otx.NewTransaction(context, me, ons.Name())
 	assert.NoError(err, "failed creating orion transaction")
 
 	// Sets the namespace where the state should be stored
@@ -49,7 +51,7 @@ func (v *MintRequestView) prepareRequest(context view.Context) *states.MintReque
 	}
 	key := record.Key()
 
-	recordBytes, _, err := tx.Get(key)
+	recordBytes, err := tx.Get(key)
 	assert.NoError(err, "error getting MintRequest: %s", key)
 	assert.True(len(recordBytes) == 0, recordBytes, "MintRequest already exists: %s", key)
 
@@ -78,13 +80,15 @@ func (v *MintRequestView) askApproval(context view.Context, request *states.Mint
 	var carKey string
 	assert.NoError(commSession.Receive(&carKey), "failed receiving car record key")
 
-	me := orion.GetDefaultONS(context).IdentityManager().Me()
-	session, err := orion.GetDefaultONS(context).SessionManager().NewSession(me)
+	ons, err := orion.GetDefaultONS(context)
+	assert.NoError(err)
+	me := ons.IdentityManager().Me()
+	session, err := ons.SessionManager().NewSession(me)
 	assert.NoError(err, "failed getting orion session")
 	qe, err := session.QueryExecutor("cars")
 	assert.NoError(err, "failed query executor")
 
-	carRecBytes, _, err := qe.Get(carKey)
+	carRecBytes, err := qe.Get(carKey)
 	assert.NoError(err, "error getting car record, key: %s", carKey)
 
 	assert.False(len(carRecBytes) == 0, "ListCar: executed, Car key: '%s',  Car record: %s\n", carKey, "not found")
@@ -113,9 +117,11 @@ func (m *MintRequestApprovalFlow) Call(context view.Context) (interface{}, error
 	assert.NoError(s.Receive(&mintReqRecordKey), "failed receiving key")
 
 	// Prepare transaction
-	me := orion.GetDefaultONS(context).IdentityManager().Me()
+	ons, err := orion.GetDefaultONS(context)
+	assert.NoError(err)
+	me := ons.IdentityManager().Me()
 
-	tx, err := otx.NewTransaction(context, me, orion.GetDefaultONS(context).Name())
+	tx, err := otx.NewTransaction(context, me, ons.Name())
 	assert.NoError(err, "failed creating orion transaction")
 
 	// Sets the namespace where the state should be stored
@@ -123,7 +129,7 @@ func (m *MintRequestApprovalFlow) Call(context view.Context) (interface{}, error
 
 	mintReqRec := &states.MintRequestRecord{}
 
-	recordBytes, _, err := tx.Get(mintReqRecordKey)
+	recordBytes, err := tx.Get(mintReqRecordKey)
 	if err != nil {
 		return "", errors.Wrapf(err, "error getting MintRequest: %s", mintReqRecordKey)
 	}
@@ -145,7 +151,7 @@ func (m *MintRequestApprovalFlow) Call(context view.Context) (interface{}, error
 	}
 	carKey := carRecord.Key()
 
-	carRecordBytes, _, err := tx.Get(carKey)
+	carRecordBytes, err := tx.Get(carKey)
 	if err != nil {
 		return "", errors.Wrapf(err, "error getting Car: %s", carKey)
 	}

@@ -10,13 +10,14 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io/ioutil"
 	"net"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc/testpb"
@@ -27,7 +28,7 @@ const (
 	numChildOrgs = 2
 )
 
-//string for cert filenames
+// string for cert filenames
 var (
 	orgCACert   = filepath.Join("testdata", "certs", "Org%d-cert.pem")
 	childCACert = filepath.Join("testdata", "certs", "Org%d-child%d-cert.pem")
@@ -48,13 +49,13 @@ VQQLDAtIeXBlcmxlZGdlcjESMBAGA1UEAwwJbG9jYWxob3N0MFkwEwYHKoZIzj0C
 func loadRootCAs() [][]byte {
 	rootCAs := [][]byte{}
 	for i := 1; i <= numOrgs; i++ {
-		root, err := ioutil.ReadFile(fmt.Sprintf(orgCACert, i))
+		root, err := os.ReadFile(fmt.Sprintf(orgCACert, i))
 		if err != nil {
 			return [][]byte{}
 		}
 		rootCAs = append(rootCAs, root)
 		for j := 1; j <= numChildOrgs; j++ {
-			root, err := ioutil.ReadFile(fmt.Sprintf(childCACert, i, j))
+			root, err := os.ReadFile(fmt.Sprintf(childCACert, i, j))
 			if err != nil {
 				return [][]byte{}
 			}
@@ -136,15 +137,15 @@ func newServer(org string) *srv {
 	}
 	for suffix := range certs {
 		fName := filepath.Join("testdata", "impersonation", org, suffix)
-		cert, err := ioutil.ReadFile(fName)
+		cert, err := os.ReadFile(fName)
 		if err != nil {
-			panic(fmt.Errorf("Failed reading %s: %v", fName, err))
+			panic(errors.Errorf("Failed reading %s: %v", fName, err))
 		}
 		certs[suffix] = cert
 	}
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		panic(fmt.Errorf("Failed to create listener: %v", err))
+		panic(errors.Errorf("Failed to create listener: %v", err))
 	}
 	gSrv, err := NewGRPCServerFromListener(l, ServerConfig{
 		ConnectionTimeout: 250 * time.Millisecond,
@@ -155,7 +156,7 @@ func newServer(org string) *srv {
 		},
 	})
 	if err != nil {
-		panic(fmt.Errorf("Failed starting gRPC server: %v", err))
+		panic(errors.Errorf("Failed starting gRPC server: %v", err))
 	}
 	s := &srv{
 		address:    l.Addr().String(),

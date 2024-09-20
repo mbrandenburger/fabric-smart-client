@@ -11,19 +11,21 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/pkg/errors"
-	"go.uber.org/zap/zapcore"
-
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/registry"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracing"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+	"go.uber.org/zap/zapcore"
 )
 
 type ctx struct {
 	context        context.Context
 	sp             driver.ServiceProvider
-	localSP        driver.ServiceProvider
+	localSP        *registry.ServiceProvider
 	id             string
 	session        view.Session
 	initiator      view.View
@@ -35,10 +37,25 @@ type ctx struct {
 	sessionsLock       sync.RWMutex
 	sessions           map[string]view.Session
 	errorCallbackFuncs []func()
+
+	tracer trace.Tracer
 }
 
-func NewContextForInitiator(context context.Context, sp driver.ServiceProvider, sessionFactory SessionFactory, resolver driver.EndpointService, party view.Identity, initiator view.View) (*ctx, error) {
-	ctx, err := NewContext(context, sp, GenerateUUID(), sessionFactory, resolver, party, nil, nil)
+func (ctx *ctx) StartSpan(name string, opts ...trace.SpanStartOption) trace.Span {
+	newCtx, span := ctx.StartSpanFrom(ctx.context, name, opts...)
+	ctx.context = newCtx
+	return span
+}
+
+func (ctx *ctx) StartSpanFrom(c context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span) {
+	return ctx.tracer.Start(c, name, opts...)
+}
+
+func NewContextForInitiator(contextID string, context context.Context, sp driver.ServiceProvider, sessionFactory SessionFactory, resolver driver.EndpointService, party view.Identity, initiator view.View, tracer trace.Tracer) (*ctx, error) {
+	if len(contextID) == 0 {
+		contextID = GenerateUUID()
+	}
+	ctx, err := NewContext(context, sp, contextID, sessionFactory, resolver, party, nil, nil, tracer)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +64,7 @@ func NewContextForInitiator(context context.Context, sp driver.ServiceProvider, 
 	return ctx, nil
 }
 
-func NewContext(context context.Context, sp driver.ServiceProvider, contextID string, sessionFactory SessionFactory, resolver driver.EndpointService, party view.Identity, session view.Session, caller view.Identity) (*ctx, error) {
+func NewContext(context context.Context, sp driver.ServiceProvider, contextID string, sessionFactory SessionFactory, resolver driver.EndpointService, party view.Identity, session view.Session, caller view.Identity, tracer trace.Tracer) (*ctx, error) {
 	ctx := &ctx{
 		context:        context,
 		id:             contextID,
@@ -59,6 +76,8 @@ func NewContext(context context.Context, sp driver.ServiceProvider, contextID st
 		caller:         caller,
 		sp:             sp,
 		localSP:        registry.New(),
+
+		tracer: tracer,
 	}
 	if session != nil {
 		// Register default session
@@ -77,6 +96,10 @@ func (ctx *ctx) Initiator() view.View {
 }
 
 func (ctx *ctx) RunView(v view.View, opts ...view.RunViewOption) (res interface{}, err error) {
+	return runViewOn(v, opts, ctx)
+}
+
+func runViewOn(v view.View, opts []view.RunViewOption, ctx localContext) (res interface{}, err error) {
 	options, err := view.CompileRunViewOptions(opts...)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed compiling options")
@@ -85,6 +108,12 @@ func (ctx *ctx) RunView(v view.View, opts ...view.RunViewOption) (res interface{
 	if options.AsInitiator {
 		initiator = v
 	}
+
+	span := ctx.StartSpan("run_view", tracing.WithAttributes(
+		tracing.String(ViewLabel, getIdentifier(v)),
+		tracing.String(InitiatorViewLabel, getIdentifier(initiator)),
+	), trace.WithSpanKind(trace.SpanKindInternal))
+	defer span.End()
 
 	var cc localContext
 	if options.SameContext {
@@ -123,6 +152,7 @@ func (ctx *ctx) RunView(v view.View, opts ...view.RunViewOption) (res interface{
 	} else {
 		res, err = v.Call(cc)
 	}
+	span.SetAttributes(attribute.Bool(SuccessLabel, err != nil))
 	if err != nil {
 		cc.cleanup()
 		return nil, err
@@ -136,7 +166,7 @@ func (ctx *ctx) Me() view.Identity {
 
 // TODO: remove this
 func (ctx *ctx) Identity(ref string) (view.Identity, error) {
-	return driver.GetEndpointService(ctx.sp).GetIdentity(ref, nil)
+	return ctx.resolver.GetIdentity(ref, nil)
 }
 
 func (ctx *ctx) IsMe(id view.Identity) bool {
@@ -267,6 +297,10 @@ func (ctx *ctx) ResetSessions() error {
 	return nil
 }
 
+func (ctx *ctx) PutService(service interface{}) error {
+	return ctx.localSP.RegisterService(service)
+}
+
 func (ctx *ctx) GetService(v interface{}) (interface{}, error) {
 	// first search locally then globally
 	s, err := ctx.localSP.GetService(v)
@@ -290,17 +324,17 @@ func (ctx *ctx) Dispose() {
 	defer ctx.sessionsLock.Unlock()
 
 	if ctx.session != nil {
-		ctx.sessionFactory.DeleteSessions(ctx.session.Info().ID)
+		ctx.sessionFactory.DeleteSessions(ctx.Context(), ctx.session.Info().ID)
 	}
 
 	for _, s := range ctx.sessions {
-		ctx.sessionFactory.DeleteSessions(s.Info().ID)
+		ctx.sessionFactory.DeleteSessions(ctx.Context(), s.Info().ID)
 	}
 	ctx.sessions = map[string]view.Session{}
 }
 
 func (ctx *ctx) newSession(view view.View, contextID string, party view.Identity) (view.Session, error) {
-	_, endpoints, pkid, err := ctx.resolver.Resolve(party)
+	_, _, endpoints, pkid, err := ctx.resolver.Resolve(party)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +342,7 @@ func (ctx *ctx) newSession(view view.View, contextID string, party view.Identity
 }
 
 func (ctx *ctx) newSessionByID(sessionID, contextID string, party view.Identity) (view.Session, error) {
-	_, endpoints, pkid, err := ctx.resolver.Resolve(party)
+	_, _, endpoints, pkid, err := ctx.resolver.Resolve(party)
 	if err != nil {
 		return nil, err
 	}
@@ -334,6 +368,6 @@ func (ctx *ctx) safeInvoke(f func()) {
 }
 
 type localContext interface {
-	view.Context
+	disposableContext
 	cleanup()
 }

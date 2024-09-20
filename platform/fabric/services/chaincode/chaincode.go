@@ -7,6 +7,8 @@ SPDX-License-Identifier: Apache-2.0
 package chaincode
 
 import (
+	"time"
+
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/fpc"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
@@ -15,20 +17,23 @@ import (
 type Endorse interface {
 	WithInvokerIdentity(identity view.Identity) Endorse
 	WithTransientEntry(k string, v interface{})
-	WithEndorsers(endorsers ...view.Identity)
 	WithEndorsersByMSPIDs(ds ...string)
 	WithEndorsersFromMyOrg()
 	WithTxID(txID fabric.TxID) Endorse
 	Call() (*fabric.Envelope, error)
+	WithNumRetries(retries uint)
+	WithRetrySleep(sleep time.Duration)
 }
 
 type Query interface {
 	WithInvokerIdentity(identity view.Identity) Query
 	WithTransientEntry(k string, v interface{})
-	WithEndorsers(endorsers ...view.Identity)
 	WithEndorsersByMSPIDs(ds ...string)
 	WithEndorsersFromMyOrg()
+	WithMatchEndorsementPolicy()
 	Call() ([]byte, error)
+	WithNumRetries(retries uint)
+	WithRetrySleep(sleep time.Duration)
 }
 
 type Chaincode interface {
@@ -59,16 +64,20 @@ func (s *stdEndorse) WithTransientEntry(k string, v interface{}) {
 	s.che.WithTransientEntry(k, v)
 }
 
-func (s *stdEndorse) WithEndorsers(endorsers ...view.Identity) {
-	s.che.WithEndorsers(endorsers...)
-}
-
 func (s *stdEndorse) WithEndorsersByMSPIDs(ds ...string) {
 	s.che.WithEndorsersByMSPIDs(ds...)
 }
 
 func (s *stdEndorse) WithEndorsersFromMyOrg() {
 	s.che.WithEndorsersFromMyOrg()
+}
+
+func (s *stdEndorse) WithNumRetries(numRetries uint) {
+	s.che.WithNumRetries(numRetries)
+}
+
+func (s *stdEndorse) WithRetrySleep(duration time.Duration) {
+	s.che.WithRetrySleep(duration)
 }
 
 type stdQuery struct {
@@ -88,16 +97,24 @@ func (s *stdQuery) WithTransientEntry(k string, v interface{}) {
 	s.chq.WithTransientEntry(k, v)
 }
 
-func (s *stdQuery) WithEndorsers(endorsers ...view.Identity) {
-	s.chq.WithEndorsers(endorsers...)
-}
-
 func (s *stdQuery) WithEndorsersByMSPIDs(ds ...string) {
 	s.chq.WithEndorsersByMSPIDs(ds...)
 }
 
 func (s *stdQuery) WithEndorsersFromMyOrg() {
 	s.chq.WithEndorsersFromMyOrg()
+}
+
+func (s *stdQuery) WithMatchEndorsementPolicy() {
+	s.chq.WithMatchEndorsementPolicy()
+}
+
+func (s *stdQuery) WithNumRetries(numRetries uint) {
+	s.chq.WithNumRetries(numRetries)
+}
+
+func (s *stdQuery) WithRetrySleep(duration time.Duration) {
+	s.chq.WithRetrySleep(duration)
 }
 
 type stdChaincode struct {
@@ -138,16 +155,18 @@ func (s *fpcEndorse) WithTransientEntry(k string, v interface{}) {
 	s.che.WithTransientEntry(k, v)
 }
 
-func (s *fpcEndorse) WithEndorsers(endorsers ...view.Identity) {
-	s.che.WithEndorsers(endorsers...)
-}
-
 func (s *fpcEndorse) WithEndorsersByMSPIDs(ds ...string) {
 	s.che.WithEndorsersByMSPIDs(ds...)
 }
 
 func (s *fpcEndorse) WithEndorsersFromMyOrg() {
 	s.che.WithEndorsersFromMyOrg()
+}
+
+func (s *fpcEndorse) WithNumRetries(numRetries uint) {
+}
+
+func (s *fpcEndorse) WithRetrySleep(duration time.Duration) {
 }
 
 type fpcQuery struct {
@@ -167,16 +186,22 @@ func (s *fpcQuery) WithTransientEntry(k string, v interface{}) {
 	s.chq.WithTransientEntry(k, v)
 }
 
-func (s *fpcQuery) WithEndorsers(endorsers ...view.Identity) {
-	s.chq.WithEndorsers(endorsers...)
-}
-
 func (s *fpcQuery) WithEndorsersByMSPIDs(ds ...string) {
 	s.chq.WithEndorsersByMSPIDs(ds...)
 }
 
 func (s *fpcQuery) WithEndorsersFromMyOrg() {
 	s.chq.WithEndorsersFromMyOrg()
+}
+
+func (s *fpcQuery) WithMatchEndorsementPolicy() {
+	s.chq.WithMatchEndorsementPolicy()
+}
+
+func (s *fpcQuery) WithNumRetries(numRetries uint) {
+}
+
+func (s *fpcQuery) WithRetrySleep(duration time.Duration) {
 }
 
 type fpcChaincode struct {

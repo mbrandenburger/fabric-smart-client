@@ -14,11 +14,9 @@ import (
 
 // FabricNetworkService gives access to a Fabric network components
 type FabricNetworkService interface {
-	Comm
-	Config
-	Ordering
-
 	Name() string
+
+	OrderingService() Ordering
 
 	TransactionManager() TransactionManager
 
@@ -37,9 +35,6 @@ type FabricNetworkService interface {
 
 	// Committer returns the committer for the channel whose name is the passed one.
 	Committer(name string) (Committer, error)
-
-	// Comm returns the comm for the channel whose name is the passed one.
-	Comm(name string) (Comm, error)
 
 	SignerService() SignerService
 

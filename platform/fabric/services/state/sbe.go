@@ -7,11 +7,10 @@ SPDX-License-Identifier: Apache-2.0
 package state
 
 import (
-	"fmt"
 	"sort"
 
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 	"github.com/hyperledger/fabric-protos-go/common"
 	"github.com/hyperledger/fabric-protos-go/msp"
@@ -53,7 +52,7 @@ func (s2 *sbeMetaHandler) StoreMeta(ns *Namespace, s interface{}, namespace stri
 		return errors.Wrap(err, "filed getting rw set")
 	}
 
-	meta, err := rws.GetStateMetadata(namespace, key, fabric.FromIntermediate)
+	meta, err := rws.GetStateMetadata(namespace, key, driver.FromIntermediate)
 	if err != nil {
 		return errors.Wrap(err, "filed getting metadata")
 	}
@@ -85,7 +84,7 @@ func newStateEP(policy []byte) (*stateEP, error) {
 	if policy != nil {
 		spe := &common.SignaturePolicyEnvelope{}
 		if err := proto.Unmarshal(policy, spe); err != nil {
-			return nil, fmt.Errorf("error unmarshaling to SignaturePolicy: %s", err)
+			return nil, errors.Errorf("error unmarshaling to SignaturePolicy: %s", err)
 		}
 
 		err := s.setMSPIDsFromSP(spe)
@@ -123,7 +122,7 @@ func (s *stateEP) setMSPIDsFromSP(sp *common.SignaturePolicyEnvelope) error {
 			msprole := &msp.MSPRole{}
 			err := proto.Unmarshal(identity.Principal, msprole)
 			if err != nil {
-				return fmt.Errorf("error unmarshaling msp principal: %s", err)
+				return errors.Errorf("error unmarshaling msp principal: %s", err)
 			}
 			s.orgs[msprole.GetMspIdentifier()] = msprole.GetRole()
 		}

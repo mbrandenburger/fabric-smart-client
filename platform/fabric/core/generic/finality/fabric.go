@@ -10,64 +10,68 @@ import (
 	"context"
 	"time"
 
-	ab "github.com/hyperledger/fabric-protos-go/orderer"
-	"go.uber.org/zap/zapcore"
-
-	"github.com/pkg/errors"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/delivery"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/peer"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
+	ab "github.com/hyperledger/fabric-protos-go/orderer"
+	"github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
 )
 
-type Network interface {
-	Name() string
-	PickPeer() *grpc.ConnectionConfig
-	LocalMembership() driver.LocalMembership
-	Comm(channel string) (driver.Comm, error)
-	Channel(id string) (driver.Channel, error)
-	IdentityProvider() driver.IdentityProvider
+var logger = flogging.MustGetLogger("fabric-sdk.core")
+
+type PeerService interface {
+	NewClient(cc grpc.ConnectionConfig) (peer.Client, error)
 }
 
 type Hasher interface {
 	Hash(msg []byte) (hash []byte, err error)
 }
 
-type fabricFinality struct {
-	channel             string
-	network             Network
-	hasher              Hasher
-	waitForEventTimeout time.Duration
+type FabricFinality struct {
+	Channel                string
+	ConfigService          driver.ConfigService
+	PeerService            PeerService
+	DefaultSigningIdentity driver.SigningIdentity
+	Hasher                 Hasher
+	WaitForEventTimeout    time.Duration
 }
 
-func NewFabricFinality(channel string, network Network, hasher Hasher, waitForEventTimeout time.Duration) (*fabricFinality, error) {
+func NewFabricFinality(
+	channel string,
+	ConfigService driver.ConfigService,
+	peerService PeerService,
+	defaultSigningIdentity driver.SigningIdentity,
+	hasher Hasher,
+	waitForEventTimeout time.Duration,
+) (*FabricFinality, error) {
 	if len(channel) == 0 {
-		panic("expected a channel, got empty string")
+		return nil, errors.Errorf("expected a channel, got empty string")
 	}
 
-	d := &fabricFinality{
-		channel:             channel,
-		network:             network,
-		hasher:              hasher,
-		waitForEventTimeout: waitForEventTimeout,
+	d := &FabricFinality{
+		Channel:                channel,
+		ConfigService:          ConfigService,
+		PeerService:            peerService,
+		DefaultSigningIdentity: defaultSigningIdentity,
+		Hasher:                 hasher,
+		WaitForEventTimeout:    waitForEventTimeout,
 	}
 
 	return d, nil
 }
 
-func (d *fabricFinality) IsFinal(txID string, address string) error {
+func (d *FabricFinality) IsFinal(txID string, address string) error {
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
-		logger.Debugf("remote checking if transaction [%s] is final in channel [%s]", txID, d.channel)
+		logger.Debugf("remote checking if transaction [%s] is final in channel [%s]", txID, d.Channel)
 	}
 	var eventCh chan delivery.TxEvent
 	var ctx context.Context
 	var cancelFunc context.CancelFunc
 
-	ch, err := d.network.Channel(d.channel)
-	if err != nil {
-		return errors.WithMessagef(err, "failed connecting to channel [%s]", d.channel)
-	}
-	client, err := ch.NewPeerClientForAddress(*d.network.PickPeer())
+	client, err := d.PeerService.NewClient(*d.ConfigService.PickPeer(driver.PeerForFinality))
 	if err != nil {
 		return errors.WithMessagef(err, "failed creating peer client for address [%s]", address)
 	}
@@ -78,7 +82,7 @@ func (d *fabricFinality) IsFinal(txID string, address string) error {
 		return errors.WithMessagef(err, "failed creating deliver client for address [%s]", address)
 	}
 
-	ctx, cancelFunc = context.WithTimeout(context.Background(), d.waitForEventTimeout)
+	ctx, cancelFunc = context.WithTimeout(context.Background(), d.WaitForEventTimeout)
 	defer cancelFunc()
 	deliverStream, err := deliverClient.NewDeliverFiltered(ctx)
 	if err != nil {
@@ -86,10 +90,10 @@ func (d *fabricFinality) IsFinal(txID string, address string) error {
 	}
 
 	blockEnvelope, err := delivery.CreateDeliverEnvelope(
-		d.channel,
-		d.network.LocalMembership().DefaultSigningIdentity(),
+		d.Channel,
+		d.DefaultSigningIdentity,
 		deliverClient.Certificate(),
-		d.hasher,
+		d.Hasher,
 		&ab.SeekPosition{
 			Type: &ab.SeekPosition_Newest{
 				Newest: &ab.SeekNewest{},

@@ -8,27 +8,22 @@ package network
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"os"
 	"strconv"
 
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager"
-
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/commands"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/topology"
-
 	"github.com/hyperledger/fabric-protos-go/peer/lifecycle"
+	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
 	"github.com/onsi/gomega/gexec"
-
-	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gstruct"
 )
 
 func PackageAndInstallChaincode(n *Network, chaincode *topology.Chaincode, peers ...*topology.Peer) {
 	// create temp file for chaincode package if not provided
 	if chaincode.PackageFile == "" {
-		tempFile, err := ioutil.TempFile("", "chaincode-package")
+		tempFile, err := os.CreateTemp("", "chaincode-package")
 		Expect(err).NotTo(HaveOccurred())
 		tempFile.Close()
 		defer os.Remove(tempFile.Name())
@@ -41,7 +36,7 @@ func PackageAndInstallChaincode(n *Network, chaincode *topology.Chaincode, peers
 		case "binary":
 			PackageChaincodeBinary(chaincode)
 		default:
-			packager := packager.New()
+			packager := n.PackagerFactory()
 			err := packager.PackageChaincode(chaincode.Path, chaincode.Lang, chaincode.Label, chaincode.PackageFile, nil)
 			Expect(err).NotTo(HaveOccurred())
 		}

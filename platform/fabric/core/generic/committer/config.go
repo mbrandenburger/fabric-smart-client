@@ -7,16 +7,19 @@ SPDX-License-Identifier: Apache-2.0
 package committer
 
 import (
+	"context"
+
 	"github.com/hyperledger/fabric-protos-go/common"
+	"github.com/pkg/errors"
+	"go.uber.org/zap/zapcore"
 )
 
-func (c *committer) handleConfig(block *common.Block, i int, env *common.Envelope) {
-	committer, err := c.network.Committer(c.channel)
-	if err != nil {
-		logger.Panicf("Cannot get Committer [%s]", err)
+func (c *Committer) HandleConfig(ctx context.Context, block *common.BlockMetadata, tx CommitTx) (*FinalityEvent, error) {
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("[%s] Config transaction received: %s", c.ChannelConfig.ID(), tx.TxID)
 	}
-
-	if err := committer.CommitConfig(block.Header.Number, block.Data.Data[i], env); err != nil {
-		logger.Panicf("Cannot commit config envelope [%s]", err)
+	if err := c.CommitConfig(tx.BlkNum, tx.Raw, tx.Envelope); err != nil {
+		return nil, errors.Wrapf(err, "cannot commit config envelope for channel [%s]", c.ChannelConfig.ID())
 	}
+	return &FinalityEvent{Ctx: ctx}, nil
 }

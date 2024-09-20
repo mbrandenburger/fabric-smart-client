@@ -10,8 +10,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -146,16 +146,13 @@ func (p *Platform) Members() []grouper.Member {
 }
 
 func (p *Platform) PostRun(load bool) {
-	p.Network.PostRun(load)
-
-	if load {
-		return
-	}
-
 	// set up our docker environment for chaincode containers
 	err := p.setupDocker()
 	Expect(err).NotTo(HaveOccurred())
-
+	p.Network.PostRun(load)
+	if load {
+		return
+	}
 	for _, chaincode := range p.Network.Topology().Chaincodes {
 		for _, invocation := range chaincode.PostRunInvocations {
 			logger.Infof("Post run invocation [%s:%s][%v][%v]",
@@ -185,6 +182,19 @@ func (p *Platform) Cleanup() {
 
 func (p *Platform) DeployChaincode(chaincode *topology.ChannelChaincode) {
 	p.Network.DeployChaincode(chaincode)
+}
+
+func (p *Platform) DeleteVault(id string) {
+	fscPeer := p.Network.FSCPeerByName(id)
+	Expect(fscPeer).ToNot(BeNil())
+	for _, uniqueName := range fscPeer.FSCNode.ReplicaUniqueNames() {
+		Expect(os.RemoveAll(p.Network.FSCNodeVaultDir(uniqueName))).ToNot(HaveOccurred())
+	}
+}
+
+// UpdateChaincode deploys the new version of the chaincode passed by chaincodeId
+func (p *Platform) UpdateChaincode(chaincodeId string, version string, path string, packageFile string) {
+	p.Network.UpdateChaincode(chaincodeId, version, path, packageFile)
 }
 
 func (p *Platform) DefaultIdemixOrgMSPDir() string {
@@ -454,10 +464,10 @@ func (p *Platform) ConnectionProfile(name string, ca bool) *network.ConnectionPr
 				},
 			}
 		} else {
-			signCert, err := ioutil.ReadFile(p.Network.PeerUserCert(p.Network.PeerByName(peers[0].Name), "Admin"))
+			signCert, err := os.ReadFile(p.Network.PeerUserCert(p.Network.PeerByName(peers[0].Name), "Admin"))
 			Expect(err).NotTo(HaveOccurred())
 
-			adminPrivateKey, err := ioutil.ReadFile(p.Network.PeerUserKey(p.Network.PeerByName(peers[0].Name), "Admin"))
+			adminPrivateKey, err := os.ReadFile(p.Network.PeerUserKey(p.Network.PeerByName(peers[0].Name), "Admin"))
 			Expect(err).NotTo(HaveOccurred())
 
 			cp.Organizations[org.Name] = network.Organization{
@@ -487,7 +497,7 @@ func (p *Platform) ConnectionProfile(name string, ca bool) *network.ConnectionPr
 			bb := bytes.Buffer{}
 
 			for _, cert := range peer.TLSCACerts {
-				raw, err := ioutil.ReadFile(cert)
+				raw, err := os.ReadFile(cert)
 				Expect(err).NotTo(HaveOccurred())
 				bb.WriteString(string(raw))
 			}
@@ -518,7 +528,7 @@ func (p *Platform) ConnectionProfile(name string, ca bool) *network.ConnectionPr
 		bb := bytes.Buffer{}
 
 		for _, cert := range orderer.TLSCACerts {
-			raw, err := ioutil.ReadFile(cert)
+			raw, err := os.ReadFile(cert)
 			Expect(err).NotTo(HaveOccurred())
 			bb.WriteString(string(raw))
 		}

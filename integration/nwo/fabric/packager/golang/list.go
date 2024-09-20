@@ -9,10 +9,10 @@ package golang
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"time"
 
@@ -34,6 +34,8 @@ type PackageInfo struct {
 	SFiles         []string
 	IgnoredGoFiles []string
 	Incomplete     bool
+	EmbedPatterns  []string
+	EmbedFiles     []string
 }
 
 func (p PackageInfo) Files() []string {
@@ -44,6 +46,7 @@ func (p PackageInfo) Files() []string {
 	files = append(files, p.HFiles...)
 	files = append(files, p.SFiles...)
 	files = append(files, p.IgnoredGoFiles...)
+	files = append(files, p.EmbedFiles...)
 	return files
 }
 
@@ -53,7 +56,7 @@ func gopathDependencyPackageInfo(goos, goarch, pkg string) ([]PackageInfo, error
 	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-json", pkg)
+	cmd := exec.CommandContext(ctx, "go", "list", "-deps", "-json", "-tags", runtime.Version(), pkg)
 	cmd.Env = append(os.Environ(), "GOOS="+goos, "GOARCH="+goarch)
 
 	stdout, err := cmd.StdoutPipe()
@@ -78,7 +81,7 @@ func gopathDependencyPackageInfo(goos, goarch, pkg string) ([]PackageInfo, error
 			return nil, err
 		}
 		if packageInfo.Incomplete {
-			return nil, fmt.Errorf("failed to calculate dependencies: incomplete package: %s", packageInfo.ImportPath)
+			return nil, errors.Errorf("failed to calculate dependencies: incomplete package: %s", packageInfo.ImportPath)
 		}
 		if packageInfo.Goroot {
 			continue
@@ -114,7 +117,7 @@ func listModuleInfo(extraEnv ...string) (*ModuleInfo, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "go", "list", "-json", ".")
+	cmd := exec.CommandContext(ctx, "go", "list", "-json", "-tags", runtime.Version(), ".")
 	cmd.Env = append(os.Environ(), "GO111MODULE=on")
 	cmd.Env = append(cmd.Env, extraEnv...)
 

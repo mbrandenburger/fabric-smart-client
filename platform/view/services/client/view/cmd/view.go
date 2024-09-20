@@ -12,17 +12,15 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"time"
 
-	"github.com/hyperledger/fabric/cmd/common/comm"
-	"github.com/hyperledger/fabric/cmd/common/signer"
-	"github.com/spf13/cobra"
-
+	tracing2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/sdk/tracing"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
+	"github.com/pkg/errors"
+	"github.com/spf13/cobra"
 )
 
 var (
@@ -85,18 +83,18 @@ func NewCmd() *cobra.Command {
 
 func validateInput(config *Config) error {
 	if config.Address == "" {
-		return fmt.Errorf("endpoint must be specified")
+		return errors.Errorf("endpoint must be specified")
 	}
 
 	if function == "" {
-		return fmt.Errorf("function name must be specified")
+		return errors.Errorf("function name must be specified")
 	}
 
 	// Check if input is to be read from stdin
 	if stdin {
-		stdinInput, err := ioutil.ReadAll(os.Stdin)
+		stdinInput, err := io.ReadAll(os.Stdin)
 		if err != nil {
-			return fmt.Errorf("failed reading input from stdin: %v", err)
+			return errors.Errorf("failed reading input from stdin: %v", err)
 		}
 		rawInput = stdinInput
 		return nil
@@ -122,11 +120,11 @@ func validateInput(config *Config) error {
 func parseFlagsToConfig() Config {
 	conf := Config{
 		Address: endpoint,
-		SignerConfig: signer.Config{
+		SignerConfig: SignerConfig{
 			IdentityPath: userCert,
 			KeyPath:      userKey,
 		},
-		TLSConfig: comm.Config{
+		TLSConfig: TLSConfig{
 			KeyPath:        tlsKey,
 			CertPath:       tlsCert,
 			PeerCACertPath: tlsCA,
@@ -173,12 +171,17 @@ func invoke() error {
 		return err
 	}
 
+	tracerProvider, err := tracing2.NewTracerProviderFromConfig(tracing2.NoOp)
+	if err != nil {
+		return err
+	}
 	c, err := view.NewClient(
 		&view.Config{
 			ConnectionConfig: cc,
 		},
 		signer,
 		&hasher{},
+		tracerProvider,
 	)
 	if err != nil {
 		return err

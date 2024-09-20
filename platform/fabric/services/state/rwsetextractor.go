@@ -7,9 +7,9 @@ SPDX-License-Identifier: Apache-2.0
 package state
 
 import (
-	"github.com/pkg/errors"
-
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
+	"github.com/pkg/errors"
 )
 
 type Network interface {
@@ -47,7 +47,7 @@ func (r *RWSetProcessor) Process(req fabric.Request, tx fabric.ProcessTransactio
 		}
 		logger.Debugf("Parsing write key [%s]", key)
 
-		meta, err := rws.GetStateMetadata(ns, key, fabric.FromIntermediate)
+		meta, err := rws.GetStateMetadata(ns, key, driver.FromIntermediate)
 		if err != nil {
 			return errors.Wrap(err, "filed getting metadata")
 		}

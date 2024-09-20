@@ -7,7 +7,6 @@ SPDX-License-Identifier: Apache-2.0
 package msp_test
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,7 +35,7 @@ var testDir = filepath.Join(os.TempDir(), "msp-test")
 func testGenerateLocalMSP(t *testing.T, nodeOUs bool) {
 	cleanup(testDir)
 
-	err := msp2.GenerateLocalMSP(testDir, testName, nil, &ca2.CA{}, &ca2.CA{}, msp2.PEER, nodeOUs, false)
+	err := msp2.GenerateLocalMSP(testDir, testName, nil, &ca2.CA{}, &ca2.CA{}, msp2.PEER, nodeOUs, false, nil)
 	assert.Error(t, err, "Empty CA should have failed")
 
 	caDir := filepath.Join(testDir, "ca")
@@ -65,7 +64,7 @@ func testGenerateLocalMSP(t *testing.T, nodeOUs bool) {
 	assert.Equal(t, testPostalCode, signCA.SignCert.Subject.PostalCode[0], "Failed to match postalCode")
 
 	// generate local MSP for nodeType=PEER
-	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.PEER, nodeOUs, false)
+	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.PEER, nodeOUs, false, nil)
 	assert.NoError(t, err, "Failed to generate local MSP")
 
 	// check to see that the right files were generated/saved
@@ -97,7 +96,7 @@ func testGenerateLocalMSP(t *testing.T, nodeOUs bool) {
 	}
 
 	// generate local MSP for nodeType=CLIENT
-	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.CLIENT, nodeOUs, false)
+	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.CLIENT, nodeOUs, false, nil)
 	assert.NoError(t, err, "Failed to generate local MSP")
 	// check all
 	for _, file := range mspFiles {
@@ -111,10 +110,10 @@ func testGenerateLocalMSP(t *testing.T, nodeOUs bool) {
 	}
 
 	tlsCA.Name = "test/fail"
-	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.CLIENT, nodeOUs, false)
+	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.CLIENT, nodeOUs, false, nil)
 	assert.Error(t, err, "Should have failed with CA name 'test/fail'")
 	signCA.Name = "test/fail"
-	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.ORDERER, nodeOUs, false)
+	err = msp2.GenerateLocalMSP(testDir, testName, nil, signCA, tlsCA, msp2.ORDERER, nodeOUs, false, nil)
 	assert.Error(t, err, "Should have failed with CA name 'test/fail'")
 	t.Log(err)
 	cleanup(testDir)
@@ -191,7 +190,7 @@ func TestExportConfig(t *testing.T) {
 	err = msp2.ExportConfig(path, caFile, true)
 	assert.NoError(t, err)
 
-	configBytes, err := ioutil.ReadFile(configFile)
+	configBytes, err := os.ReadFile(configFile)
 	if err != nil {
 		t.Fatalf("failed to read config file: [%s]", err)
 	}

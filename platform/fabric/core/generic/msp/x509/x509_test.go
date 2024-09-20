@@ -13,12 +13,16 @@ import (
 )
 
 func TestDeserializer(t *testing.T) {
-	p, err := NewProvider("./testdata/msp", "apple", nil)
+	p, err := NewProvider("./testdata/msp", "", "apple", nil)
 	assert.NoError(t, err)
 	id, auditInfo, err := p.Identity(nil)
 	assert.NoError(t, err)
 	eID := p.EnrollmentID()
-	assert.Equal(t, eID, string(auditInfo))
+	ai := &AuditInfo{}
+	err = ai.FromBytes(auditInfo)
+	assert.NoError(t, err)
+
+	assert.Equal(t, eID, ai.EnrollmentId)
 	assert.Equal(t, "auditor.org1.example.com", eID)
 
 	des := &Deserializer{}

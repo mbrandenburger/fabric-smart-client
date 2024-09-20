@@ -7,12 +7,11 @@
 package packager
 
 import (
-	"fmt"
-
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/external"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/golang"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/replacer"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/pkg/errors"
 )
 
 // SupportedPlatforms is the canonical list of platforms Fabric supports
@@ -30,8 +29,8 @@ type Platform interface {
 	GetDeploymentPayload(path string, replacer replacer.Func) ([]byte, error)
 }
 
-// NormalizerPather is an optional interface that can be implemented by
-// platforms to modify the path stored in the chaincde ID.
+// NormalizePather is an optional interface that can be implemented by
+// platforms to modify the path stored in the chaincode ID.
 type NormalizePather interface {
 	NormalizePath(path string) (string, error)
 }
@@ -58,7 +57,7 @@ func NewRegistry(platformTypes ...Platform) *Registry {
 func (r *Registry) ValidateSpec(ccType, path string) error {
 	platform, ok := r.Platforms[ccType]
 	if !ok {
-		return fmt.Errorf("unknown chaincodeType: %s", ccType)
+		return errors.Errorf("unknown chaincodeType: %s", ccType)
 	}
 	return platform.ValidatePath(path)
 }
@@ -66,7 +65,7 @@ func (r *Registry) ValidateSpec(ccType, path string) error {
 func (r *Registry) NormalizePath(ccType, path string) (string, error) {
 	platform, ok := r.Platforms[ccType]
 	if !ok {
-		return "", fmt.Errorf("unknown chaincodeType: %s", ccType)
+		return "", errors.Errorf("unknown chaincodeType: %s", ccType)
 	}
 	if normalizer, ok := platform.(NormalizePather); ok {
 		return normalizer.NormalizePath(path)
@@ -77,7 +76,7 @@ func (r *Registry) NormalizePath(ccType, path string) (string, error) {
 func (r *Registry) ValidateDeploymentSpec(ccType string, codePackage []byte) error {
 	platform, ok := r.Platforms[ccType]
 	if !ok {
-		return fmt.Errorf("unknown chaincodeType: %s", ccType)
+		return errors.Errorf("unknown chaincodeType: %s", ccType)
 	}
 
 	// ignore empty packages
@@ -91,8 +90,7 @@ func (r *Registry) ValidateDeploymentSpec(ccType string, codePackage []byte) err
 func (r *Registry) GetDeploymentPayload(ccType, path string, replacer replacer.Func) ([]byte, error) {
 	platform, ok := r.Platforms[ccType]
 	if !ok {
-		return nil, fmt.Errorf("unknown chaincodeType: %s", ccType)
+		return nil, errors.Errorf("unknown chaincodeType: %s", ccType)
 	}
-
 	return platform.GetDeploymentPayload(path, replacer)
 }

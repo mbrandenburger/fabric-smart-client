@@ -12,15 +12,9 @@ import (
 	"reflect"
 	"sync"
 
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/config"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/endpoint"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/finality"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/id"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/views"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	driver2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	fabricLogging "github.com/hyperledger/fabric/common/flogging"
 	"github.com/pkg/errors"
@@ -31,31 +25,40 @@ var (
 	logger                   = flogging.MustGetLogger("fabric-sdk.core")
 )
 
-type fnsProvider struct {
-	sp     view.ServiceProvider
-	config *Config
-	ctx    context.Context
-
-	networksMutex sync.Mutex
-	networks      map[string]driver.FabricNetworkService
+type NamedDriver struct {
+	Name string
+	driver.Driver
 }
 
-func NewFabricNetworkServiceProvider(sp view.ServiceProvider, config *Config) (*fnsProvider, error) {
-	provider := &fnsProvider{
-		sp:       sp,
-		config:   config,
-		networks: map[string]driver.FabricNetworkService{},
+type FSNProvider struct {
+	config *Config
+
+	networksMutex sync.Mutex
+	configService driver2.ConfigService
+	networks      map[string]driver.FabricNetworkService
+	drivers       map[string]driver.Driver
+}
+
+func NewFabricNetworkServiceProvider(configService driver2.ConfigService, namedDrivers []NamedDriver) (*FSNProvider, error) {
+	fnsConfig, err := NewConfig(configService)
+	if err != nil {
+		return nil, err
 	}
-	if err := provider.InstallViews(); err != nil {
-		return nil, errors.WithMessage(err, "failed to install fns provider")
+	drivers := map[string]driver.Driver{}
+	for _, d := range namedDrivers {
+		drivers[d.Name] = d
+	}
+	provider := &FSNProvider{
+		config:        fnsConfig,
+		configService: configService,
+		networks:      map[string]driver.FabricNetworkService{},
+		drivers:       drivers,
 	}
 	provider.InitFabricLogging()
 	return provider, nil
 }
 
-func (p *fnsProvider) Start(ctx context.Context) error {
-	p.ctx = ctx
-
+func (p *FSNProvider) Start(ctx context.Context) error {
 	// What's the default network?
 	// TODO: add listener to fabric service when a channel is opened.
 	for _, name := range p.config.Names() {
@@ -63,10 +66,18 @@ func (p *fnsProvider) Start(ctx context.Context) error {
 		if err != nil {
 			return errors.Wrapf(err, "failed to start fabric network service [%s]", name)
 		}
-		for _, ch := range fns.Channels() {
-			_, err := fns.Channel(ch)
+		for _, channelName := range fns.ConfigService().ChannelIDs() {
+			ch, err := fns.Channel(channelName)
 			if err != nil {
-				return errors.Wrapf(err, "failed to get channel [%s] for fabric network service [%s]", ch, name)
+				return errors.Wrapf(err, "failed to get channel [%s] for fabric network service [%s]", channelName, name)
+			}
+			logger.Infof("start fabric [%s:%s]'s commit service...", name, channelName)
+			if err := ch.Committer().Start(ctx); err != nil {
+				return errors.WithMessagef(err, "failed to start committer on channel [%s] for fabric network service [%s]", channelName, name)
+			}
+			logger.Infof("start fabric [%s:%s]'s delivery service...", name, channelName)
+			if err := ch.Delivery().Start(ctx); err != nil {
+				return errors.WithMessagef(err, "failed to start delivery on channel [%s] for fabric network service [%s]", channelName, name)
 			}
 		}
 	}
@@ -74,13 +85,13 @@ func (p *fnsProvider) Start(ctx context.Context) error {
 	return nil
 }
 
-func (p *fnsProvider) Stop() error {
+func (p *FSNProvider) Stop() error {
 	for _, networkName := range p.config.Names() {
 		fns, err := p.FabricNetworkService(networkName)
 		if err != nil {
 			return err
 		}
-		for _, channelName := range fns.Channels() {
+		for _, channelName := range fns.ConfigService().ChannelIDs() {
 			ch, err := fns.Channel(channelName)
 			if err != nil {
 				return err
@@ -93,15 +104,15 @@ func (p *fnsProvider) Stop() error {
 	return nil
 }
 
-func (p *fnsProvider) Names() []string {
+func (p *FSNProvider) Names() []string {
 	return p.config.Names()
 }
 
-func (p *fnsProvider) DefaultName() string {
+func (p *FSNProvider) DefaultName() string {
 	return p.config.DefaultName()
 }
 
-func (p *fnsProvider) FabricNetworkService(network string) (driver.FabricNetworkService, error) {
+func (p *FSNProvider) FabricNetworkService(network string) (driver.FabricNetworkService, error) {
 	p.networksMutex.Lock()
 	defer p.networksMutex.Unlock()
 
@@ -121,30 +132,13 @@ func (p *fnsProvider) FabricNetworkService(network string) (driver.FabricNetwork
 	return net, nil
 }
 
-func (p *fnsProvider) InstallViews() error {
-	view.GetRegistry(p.sp).RegisterResponder(views.NewIsFinalResponderView(p), &finality.IsFinalInitiatorView{})
-	return nil
-}
-
 // InitFabricLogging initializes the fabric logging system
 // using the FSC configuration.
-func (p *fnsProvider) InitFabricLogging() {
-	cs := view.GetConfigService(p.sp)
-	// read in the legacy logging level settings and, if set,
-	// notify users of the FSCNODE_LOGGING_SPEC env variable
-	var loggingLevel string
-	if cs.GetString("logging_level") != "" {
-		loggingLevel = cs.GetString("logging_level")
-	} else {
-		loggingLevel = cs.GetString("logging.level")
-	}
-	if loggingLevel != "" {
-		logger.Warning("CORE_LOGGING_LEVEL is no longer supported, please use the FSCNODE_LOGGING_SPEC environment variable")
-	}
+func (p *FSNProvider) InitFabricLogging() {
 	loggingSpec := os.Getenv("FSCNODE_LOGGING_SPEC")
 	loggingFormat := os.Getenv("FSCNODE_LOGGING_FORMAT")
 	if len(loggingSpec) == 0 {
-		loggingSpec = cs.GetString("logging.spec")
+		loggingSpec = p.configService.GetString("logging.spec")
 	}
 	fabricLogging.Init(fabricLogging.Config{
 		Format:  loggingFormat,
@@ -153,72 +147,50 @@ func (p *fnsProvider) InitFabricLogging() {
 	})
 }
 
-func (p *fnsProvider) newFNS(network string) (driver.FabricNetworkService, error) {
-	logger.Debugf("creating new fabric network service for network [%s]", network)
-	// bridge services
-	c, err := config.New(view.GetConfigService(p.sp), network, network == p.config.defaultName)
+func (p *FSNProvider) newFNS(network string) (driver.FabricNetworkService, error) {
+	fnsConfig, err := NewConfig(p.configService)
 	if err != nil {
-		return nil, err
-	}
-	sigService := generic.NewSigService(p.sp)
-
-	// Endpoint service
-	resolverService, err := endpoint.NewResolverService(
-		c,
-		view.GetEndpointService(p.sp),
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed instantiating fabric endpoint resolver")
-	}
-	if err := resolverService.LoadResolvers(); err != nil {
-		return nil, errors.Wrap(err, "failed loading fabric endpoint resolvers")
-	}
-	endpointService, err := generic.NewEndpointResolver(resolverService, view.GetEndpointService(p.sp))
-	if err != nil {
-		return nil, errors.Wrap(err, "failed loading endpoint service")
+		return nil, errors.WithMessagef(err, "failed to load configuration")
 	}
 
-	// Local MSP Manager
-	mspService := msp.NewLocalMSPManager(
-		p.sp,
-		c,
-		sigService,
-		view.GetEndpointService(p.sp),
-		view.GetIdentityProvider(p.sp).DefaultIdentity(),
-		c.MSPCacheSize(),
-	)
-	if err := mspService.Load(); err != nil {
-		return nil, errors.Wrap(err, "failed loading local msp service")
-	}
-
-	// Identity Manager
-	idProvider, err := id.NewProvider(endpointService)
+	netConfig, err := fnsConfig.Config(network)
 	if err != nil {
-		return nil, errors.Wrap(err, "failed creating id provider")
+		return nil, errors.WithMessagef(err, "failed to get configuration for [%s]", network)
+	}
+	if len(netConfig.Driver) != 0 {
+		logger.Debugf("instantiate Fabric Network Service [%s] with driver [%s]", network, netConfig.Driver)
+		// use the suggested driver
+		driver, ok := p.drivers[netConfig.Driver]
+		if !ok {
+			return nil, errors.Errorf("driver [%s] is not registered", netConfig.Driver)
+		}
+		nw, err := driver.New(network, network == p.config.defaultName)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to create network [%s]", network)
+		}
+		return nw, nil
 	}
 
-	// New Network
-	net, err := generic.NewNetwork(
-		p.ctx,
-		p.sp,
-		network,
-		c,
-		idProvider,
-		mspService,
-		sigService,
-	)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed instantiating fabric service provider")
-	}
+	logger.Debugf("no driver specified for network [%s], try all", network)
 
-	return net, nil
+	// try all available drivers
+	for _, d := range p.drivers {
+		nw, err := d.New(network, network == p.config.defaultName)
+		if err != nil {
+			logger.Warningf("failed to create network [%s]: %s", network, err)
+			continue
+		}
+		if nw != nil {
+			return nw, nil
+		}
+	}
+	return nil, errors.Errorf("no network driver found for [%s]", network)
 }
 
-func GetFabricNetworkServiceProvider(sp view.ServiceProvider) driver.FabricNetworkServiceProvider {
+func GetFabricNetworkServiceProvider(sp view.ServiceProvider) (driver.FabricNetworkServiceProvider, error) {
 	s, err := sp.GetService(fabricNetworkServiceType)
 	if err != nil {
-		logger.Warnf("failed getting fabric network service provider: %s", err)
-		return nil
+		return nil, errors.Wrapf(err, "failed getting fabric network service provider")
 	}
-	return s.(driver.FabricNetworkServiceProvider)
+	return s.(driver.FabricNetworkServiceProvider), nil
 }

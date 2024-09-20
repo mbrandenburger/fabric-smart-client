@@ -7,13 +7,11 @@ SPDX-License-Identifier: Apache-2.0
 package id
 
 import (
-	"io/ioutil"
-
 	"github.com/pkg/errors"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/id/ecdsa"
+	kms "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/kms"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 )
 
@@ -37,30 +35,32 @@ type EndpointService interface {
 	GetIdentity(label string, pkid []byte) (view.Identity, error)
 }
 
-type provider struct {
+type Provider struct {
 	configProvider  ConfigProvider
 	sigService      SigService
 	endpointService EndpointService
 	defaultID       view.Identity
 	admins          []view.Identity
 	clients         []view.Identity
+	kms             *kms.KMS
 }
 
-func NewProvider(configProvider ConfigProvider, sigService SigService, endpointService EndpointService) *provider {
-	return &provider{
+func NewProvider(configProvider ConfigProvider, sigService SigService, endpointService EndpointService, kms *kms.KMS) (*Provider, error) {
+	p := &Provider{
 		configProvider:  configProvider,
 		sigService:      sigService,
 		endpointService: endpointService,
+		kms:             kms,
 	}
+	if err := p.Load(); err != nil {
+		return nil, errors.Wrapf(err, "failed loading identities")
+	}
+	return p, nil
 }
 
-func (p *provider) Load() error {
+func (p *Provider) Load() error {
 	if err := p.loadDefaultIdentity(); err != nil {
 		return errors.WithMessagef(err, "failed loading default identity")
-	}
-
-	if err := p.loadAdminIdentities(); err != nil {
-		return errors.WithMessagef(err, "failed loading admin identities")
 	}
 
 	if err := p.loadClientIdentities(); err != nil {
@@ -70,11 +70,11 @@ func (p *provider) Load() error {
 	return nil
 }
 
-func (p *provider) DefaultIdentity() view.Identity {
+func (p *Provider) DefaultIdentity() view.Identity {
 	return p.defaultID
 }
 
-func (p *provider) Identity(label string) view.Identity {
+func (p *Provider) Identity(label string) view.Identity {
 	id, err := p.endpointService.GetIdentity(label, nil)
 	if err != nil {
 		logger.Warningf("failed to get identity for label %s: %s", label, err)
@@ -83,58 +83,28 @@ func (p *provider) Identity(label string) view.Identity {
 	return id
 }
 
-func (p *provider) Admins() []view.Identity {
+func (p *Provider) Admins() []view.Identity {
 	return p.admins
 }
 
-func (p *provider) Clients() []view.Identity {
+func (p *Provider) Clients() []view.Identity {
 	return p.clients
 }
 
-func (p *provider) loadDefaultIdentity() error {
-	defaultID, err := LoadIdentity(p.configProvider.GetPath("fsc.identity.cert.file"))
-	if err != nil {
-		return errors.Wrapf(err, "failed loading SFC Node Identity")
-	}
-	id, verifier, err := ecdsa.NewIdentityFromPEMCert(defaultID)
-	if err != nil {
-		return errors.Wrap(err, "failed loading default verifier")
-	}
-	fileCont, err := ioutil.ReadFile(p.configProvider.GetPath("fsc.identity.key.file"))
-	if err != nil {
-		return errors.Wrapf(err, "failed reading file [%s]", fileCont)
-	}
-	signer, err := ecdsa.NewSignerFromPEM(fileCont)
+func (p *Provider) loadDefaultIdentity() error {
+	id, signer, verifier, err := p.kms.Load(p.configProvider)
 	if err != nil {
 		return errors.Wrapf(err, "failed loading default signer")
 	}
+
 	if err := p.sigService.RegisterSigner(id, signer, verifier); err != nil {
 		return errors.Wrapf(err, "failed registering default identity signer")
 	}
-	p.defaultID = defaultID
+	p.defaultID = id
 	return nil
 }
 
-func (p *provider) loadAdminIdentities() error {
-	certs := p.configProvider.GetStringSlice("fsc.admin.certs")
-	var admins []view.Identity
-	for _, cert := range certs {
-		// TODO: support cert as a folder
-		certPath := p.configProvider.TranslatePath(cert)
-		admin, err := LoadIdentity(certPath)
-		if err != nil {
-			logger.Errorf("failed loading admin cert at [%s]: [%s]", certPath, err)
-			continue
-		}
-		logger.Infof("loaded admin cert at [%s]: [%s]", certPath, err)
-		admins = append(admins, admin)
-	}
-	logger.Infof("loaded [%d] admin identities", len(admins))
-	p.admins = admins
-	return nil
-}
-
-func (p *provider) loadClientIdentities() error {
+func (p *Provider) loadClientIdentities() error {
 	certs := p.configProvider.GetStringSlice("fsc.client.certs")
 	var clients []view.Identity
 	for _, cert := range certs {

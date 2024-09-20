@@ -10,9 +10,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
 	"net"
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -25,7 +26,7 @@ import (
 func TestCreds(t *testing.T) {
 	t.Parallel()
 
-	caPEM, err := ioutil.ReadFile(filepath.Join("testdata", "certs", "Org1-cert.pem"))
+	caPEM, err := os.ReadFile(filepath.Join("testdata", "certs", "Org1-cert.pem"))
 	if err != nil {
 		t.Fatalf("failed to read root certificate: %v", err)
 	}
@@ -95,7 +96,10 @@ func TestCreds(t *testing.T) {
 		MaxVersion: tls.VersionTLS10,
 	})
 	wg.Wait()
-	assert.Contains(t, err.Error(), "protocol version not supported")
+	assert.True(t,
+		strings.Contains(err.Error(), "tls: no supported versions satisfy MinVersion and MaxVersion") || // go1.17
+			strings.Contains(err.Error(), "protocol version not supported"), // go1.18
+	)
 	assert.Contains(t, recorder.Messages()[0], "TLS handshake failed with error")
 }
 
@@ -125,7 +129,7 @@ func TestConfig(t *testing.T) {
 func TestAddRootCA(t *testing.T) {
 	t.Parallel()
 
-	caPEM, err := ioutil.ReadFile(filepath.Join("testdata", "certs", "Org1-cert.pem"))
+	caPEM, err := os.ReadFile(filepath.Join("testdata", "certs", "Org1-cert.pem"))
 	if err != nil {
 		t.Fatalf("failed to read root certificate: %v", err)
 	}

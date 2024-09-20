@@ -39,7 +39,8 @@ func (n *Network) CheckTopologyOrderers() {
 		for _, portName := range OrdererPortNames() {
 			ports[portName] = n.Context.ReservePort()
 		}
-		n.PortsByOrdererID[o.ID()] = ports
+		n.Context.SetPortsByOrdererID(n.Prefix, o.ID(), ports)
+		n.Context.SetHostByOrdererID(n.Prefix, o.ID(), "0.0.0.0")
 	}
 }
 
@@ -56,7 +57,9 @@ func (n *Network) CheckTopologyFSCNodes() (users map[string]int, userSpecs map[s
 		po := node.PlatformOpts()
 		nodeOpts := opts.Get(po)
 		orgs := nodeOpts.Organizations()
-		Expect(orgs).NotTo(BeEmpty())
+		if len(orgs) == 0 {
+			continue
+		}
 
 		org, found := FindOptOrg(orgs, n.topology.TopologyName)
 		if !found {
@@ -109,9 +112,9 @@ func (n *Network) CheckTopologyFSCNodes() (users map[string]int, userSpecs map[s
 			Type:           topology.FSCPeer,
 			Role:           nodeOpts.Role(),
 			Bootstrap:      node.Bootstrap,
-			ExecutablePath: node.ExecutablePath,
 			Identities:     identities,
 			DefaultNetwork: defaultNetwork,
+			FSCNode:        node,
 		}
 		bccspDefault := "SW"
 		if nodeOpts.DefaultIdentityByHSM() {
@@ -131,6 +134,7 @@ func (n *Network) CheckTopologyFSCNodes() (users map[string]int, userSpecs map[s
 
 		n.Peers = append(n.Peers, p)
 		n.Context.SetPortsByPeerID("fsc", p.ID(), n.Context.PortsByPeerID(n.Prefix, node.Name))
+		n.Context.SetHostByPeerID("fsc", p.ID(), n.Context.HostByPeerID(n.Prefix, node.Name))
 	}
 
 	return
@@ -167,6 +171,7 @@ func (n *Network) CheckTopologyFabricPeers() {
 			ports[portName] = n.Context.ReservePort()
 		}
 		n.Context.SetPortsByPeerID(n.Prefix, p.ID(), ports)
+		n.Context.SetHostByPeerID(n.Prefix, p.ID(), "127.0.0.1")
 	}
 }
 

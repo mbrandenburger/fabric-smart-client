@@ -8,9 +8,8 @@ package viperutil
 
 import (
 	"encoding/pem"
-	"fmt"
-	"io/ioutil"
 	"math"
+	"os"
 	"reflect"
 	"regexp"
 	"strconv"
@@ -68,7 +67,7 @@ func byteSizeDecodeHook(f reflect.Kind, t reflect.Kind, data interface{}) (inter
 			size = size << 10
 		}
 		if size > math.MaxUint32 {
-			return size, fmt.Errorf("value '%s' overflows uint32", raw)
+			return size, errors.Errorf("value '%s' overflows uint32", raw)
 		}
 		return size, nil
 	}
@@ -96,14 +95,14 @@ func stringFromFileDecodeHook(f reflect.Kind, t reflect.Kind, data interface{}) 
 		}
 		switch {
 		case ok && fileName != nil:
-			bytes, err := ioutil.ReadFile(fileName.(string))
+			bytes, err := os.ReadFile(fileName.(string))
 			if err != nil {
 				return data, err
 			}
 			return string(bytes), nil
 		case ok:
 			// fileName was nil
-			return nil, fmt.Errorf("value of File: was nil")
+			return nil, errors.Errorf("value of File: was nil")
 		}
 	}
 	return data, nil
@@ -143,7 +142,7 @@ func pemBlocksFromFileDecodeHook(f reflect.Kind, t reflect.Kind, data interface{
 		switch {
 		case ok && fileName != "":
 			var result []string
-			bytes, err := ioutil.ReadFile(fileName)
+			bytes, err := os.ReadFile(fileName)
 			if err != nil {
 				return data, err
 			}
@@ -161,7 +160,7 @@ func pemBlocksFromFileDecodeHook(f reflect.Kind, t reflect.Kind, data interface{
 			return result, nil
 		case ok:
 			// fileName was nil
-			return nil, fmt.Errorf("value of File: was nil")
+			return nil, errors.Errorf("value of File: was nil")
 		}
 	}
 	return data, nil

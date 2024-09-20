@@ -7,31 +7,83 @@ SPDX-License-Identifier: Apache-2.0
 package chaincode
 
 import (
+	"context"
 	"sync"
+	"time"
 
-	"github.com/ReneKroon/ttlcache/v2"
-
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/peer"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
+	"github.com/jellydator/ttlcache/v2"
 )
 
+var logger = flogging.MustGetLogger("fabric-sdk.core.generic.chaincode")
+
+type PeerManager interface {
+	NewClient(cc grpc.ConnectionConfig) (peer.Client, error)
+}
+
+type Broadcaster interface {
+	Broadcast(context context.Context, blob interface{}) error
+}
+
+type SerializableSigner interface {
+	Sign(message []byte) ([]byte, error)
+
+	Serialize() ([]byte, error)
+}
+
+type MSPProvider interface {
+	MSPManager() driver.MSPManager
+}
+
 type Chaincode struct {
-	name    string
-	sp      view.ServiceProvider
-	network Network
-	channel Channel
+	name            string
+	NetworkID       string
+	ChannelID       string
+	ConfigService   driver.ConfigService
+	ChannelConfig   driver.ChannelConfig
+	NumRetries      uint
+	RetrySleep      time.Duration
+	LocalMembership driver.LocalMembership
+	PeerManager     PeerManager
+	SignerService   driver.SignerService
+	Broadcaster     Broadcaster
+	Finality        driver.Finality
+	MSPProvider     MSPProvider
 
 	discoveryResultsCacheLock sync.RWMutex
 	discoveryResultsCache     ttlcache.SimpleCache
 }
 
-func NewChaincode(name string, sp view.ServiceProvider, network Network, channel Channel) *Chaincode {
+func NewChaincode(
+	name string,
+	networkConfig driver.ConfigService,
+	channelConfig driver.ChannelConfig,
+	localMembership driver.LocalMembership,
+	peerManager PeerManager,
+	signerService driver.SignerService,
+	broadcaster Broadcaster,
+	finality driver.Finality,
+	MSPProvider MSPProvider,
+) *Chaincode {
 	return &Chaincode{
-		name:                  name,
-		sp:                    sp,
-		network:               network,
-		channel:               channel,
-		discoveryResultsCache: ttlcache.NewCache(),
+		name:                      name,
+		NetworkID:                 networkConfig.NetworkName(),
+		ChannelID:                 channelConfig.ID(),
+		ConfigService:             networkConfig,
+		ChannelConfig:             channelConfig,
+		NumRetries:                channelConfig.GetNumRetries(),
+		RetrySleep:                channelConfig.GetRetrySleep(),
+		LocalMembership:           localMembership,
+		PeerManager:               peerManager,
+		SignerService:             signerService,
+		Broadcaster:               broadcaster,
+		Finality:                  finality,
+		MSPProvider:               MSPProvider,
+		discoveryResultsCacheLock: sync.RWMutex{},
+		discoveryResultsCache:     ttlcache.NewCache(),
 	}
 }
 
@@ -52,20 +104,21 @@ func (c *Chaincode) IsAvailable() (bool, error) {
 }
 
 func (c *Chaincode) IsPrivate() bool {
-	channels, err := c.network.Config().Channels()
-	if err != nil {
-		logger.Error("failed getting channels' configurations [%s]", err)
+	channel := c.ConfigService.Channel(c.ChannelID)
+	if channel == nil {
 		return false
 	}
-	for _, channel := range channels {
-		if channel.Name == c.channel.Name() {
-			for _, chaincode := range channel.Chaincodes {
-				if chaincode.Name == c.name {
-					return chaincode.Private
-				}
-			}
+	for _, chaincode := range channel.ChaincodeConfigs() {
+		if chaincode.ID() == c.name {
+			return chaincode.IsPrivate()
 		}
 	}
 	// Nothing was found
 	return false
+}
+
+// Version returns the version of this chaincode.
+// It uses discovery to extract this information from the endorsers
+func (c *Chaincode) Version() (string, error) {
+	return NewDiscovery(c).ChaincodeVersion()
 }

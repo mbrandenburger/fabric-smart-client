@@ -15,7 +15,6 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/pem"
-	"fmt"
 	"math/big"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
@@ -164,6 +163,9 @@ func NewIdentityFromBytes(raw []byte) (view.Identity, driver.Verifier, error) {
 
 func NewIdentityFromPEMCert(raw []byte) (view.Identity, driver.Verifier, error) {
 	p, _ := pem.Decode(raw)
+	if p == nil {
+		return nil, nil, errors.Errorf("cannot pem decode [%v]", raw)
+	}
 	cert, err := x509.ParseCertificate(p.Bytes)
 	if err != nil {
 		return nil, nil, err
@@ -176,7 +178,8 @@ func NewIdentityFromPEMCert(raw []byte) (view.Identity, driver.Verifier, error) 
 	return raw, &Verifier{pk: publicKey}, nil
 }
 
-/**
+/*
+*
 When using ECDSA, both (r,s) and (r, -s mod n) are valid signatures.  In order
 to protect against signature malleability attacks, Fabric normalizes all
 signatures to a canonical form where s is at most half the order of the curve.
@@ -198,7 +201,7 @@ func toLowS(key ecdsa.PublicKey, sig Signature) Signature {
 func IsLowS(k *ecdsa.PublicKey, s *big.Int) (bool, error) {
 	halfOrder, ok := curveHalfOrders[k.Curve]
 	if !ok {
-		return false, fmt.Errorf("curve not recognized [%s]", k.Curve)
+		return false, errors.Errorf("curve not recognized [%s]", k.Curve)
 	}
 
 	return s.Cmp(halfOrder) != 1, nil

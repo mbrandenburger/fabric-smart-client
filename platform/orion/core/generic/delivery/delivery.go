@@ -10,8 +10,8 @@ import (
 	"context"
 	"time"
 
+	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/core/generic/ledger"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/driver"
-	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	"github.com/hyperledger-labs/orion-sdk-go/pkg/bcdb"
 	"github.com/hyperledger-labs/orion-server/pkg/types"
@@ -52,51 +52,46 @@ type DeliverStream interface {
 }
 
 type delivery struct {
-	ctx                 context.Context
-	sp                  view2.ServiceProvider
 	network             Network
 	waitForEventTimeout time.Duration
 	callback            Callback
 	vault               Vault
 	me                  string
 	networkName         string
+	stop                chan bool
 }
 
-func New(
-	ctx context.Context,
-	sp view2.ServiceProvider,
-	network Network,
-	callback Callback,
-	vault Vault,
-	waitForEventTimeout time.Duration,
-) (*delivery, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
+func New(network Network, callback Callback, vault Vault, waitForEventTimeout time.Duration) (*delivery, error) {
 	d := &delivery{
-		ctx:                 ctx,
-		sp:                  sp,
 		network:             network,
 		waitForEventTimeout: waitForEventTimeout,
 		callback:            callback,
 		vault:               vault,
 		me:                  network.IdentityManager().Me(),
 		networkName:         network.Name(),
+		stop:                make(chan bool),
 	}
 	return d, nil
 }
 
-// Start runs the delivery service in a goroutine
-func (d *delivery) Start() {
-	go d.Run()
+// StartDelivery runs the delivery service in a goroutine
+func (d *delivery) StartDelivery(ctx context.Context) error {
+	go d.Run(ctx)
+	return nil
 }
 
-func (d *delivery) Run() error {
+func (d *delivery) Run(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var df DeliverStream
 	var err error
 	for {
 		select {
-		case <-d.ctx.Done():
+		case <-d.stop:
+			// Time to stop
+			return nil
+		case <-ctx.Done():
 			// Time to cancel
 			return errors.New("context done")
 		default:
@@ -160,12 +155,16 @@ func (d *delivery) Run() error {
 	}
 }
 
+func (d *delivery) Stop() {
+	d.stop <- true
+}
+
 func (d *delivery) connect() (DeliverStream, error) {
 	session, err := d.network.SessionManager().NewSession(d.me)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed to create session with identity [%s]", d.me)
 	}
-	ledger, err := session.Ledger()
+	l, err := session.Ledger()
 	if err != nil {
 		return nil, errors.WithMessage(err, "failed to get ledger from session")
 	}
@@ -175,5 +174,5 @@ func (d *delivery) connect() (DeliverStream, error) {
 		Capacity:         5,
 		IncludeTxIDs:     true,
 	}
-	return ledger.NewBlockHeaderDeliveryService(conf), nil
+	return l.(*ledger.Ledger).NewBlockHeaderDeliveryService(conf)
 }

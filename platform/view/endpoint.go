@@ -29,35 +29,25 @@ const (
 	P2PPort PortName = "P2P"
 )
 
-// PKIResolver extracts public key ids from identities
-type PKIResolver interface {
-	// GetPKIidOfCert returns the id of the public key contained in the passed identity
-	GetPKIidOfCert(peerIdentity view.Identity) []byte
-}
+// PublicKeyExtractor extracts public keys from identities
+type PublicKeyExtractor = driver.PublicKeyExtractor
+
+type PublicKeyIDSynthesizer = driver.PublicKeyIDSynthesizer
 
 // EndpointService provides endpoint-related services
 type EndpointService struct {
 	es driver.EndpointService
 }
 
-// Endpoint returns the endpoint of the passed identity
-func (e *EndpointService) Endpoint(party view.Identity) (map[PortName]string, error) {
-	res, err := e.es.Endpoint(party)
-	if err != nil {
-		return nil, err
-	}
-	out := map[PortName]string{}
-	for name, s := range res {
-		out[PortName(name)] = s
-	}
-	return out, nil
+func NewEndpointService(es driver.EndpointService) *EndpointService {
+	return &EndpointService{es: es}
 }
 
 // Resolve returns the endpoints of the passed identity.
 // If the passed identity does not have any endpoint set, the service checks
 // if the passed identity is bound to another identity that is returned together with its endpoints and public-key identifier.
 func (e *EndpointService) Resolve(party view.Identity) (view.Identity, map[PortName]string, []byte, error) {
-	id, ports, raw, err := e.es.Resolve(party)
+	_, id, ports, raw, err := e.es.Resolve(party)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -101,20 +91,24 @@ func (e *EndpointService) IsBoundTo(a view.Identity, b view.Identity) bool {
 }
 
 // AddResolver adds a resolver for tha passed parameters. The passed id can be retrieved by using the passed name in a call to GetIdentity method.
-// The addresses can retrieved by passing the identity in a call to Resolve.
+// The addresses can be retrieved by passing the identity in a call to Resolve.
 // If a resolver is already bound to the passed name, then the passed identity is linked to the already existing identity. The already existing
 // identity is returned
 func (e *EndpointService) AddResolver(name string, domain string, addresses map[string]string, aliases []string, id []byte) (view.Identity, error) {
 	return e.es.AddResolver(name, domain, addresses, aliases, id)
 }
 
-// AddPKIResolver add a new PKI resolver
-func (e *EndpointService) AddPKIResolver(pkiResolver PKIResolver) error {
-	return e.es.AddPKIResolver(pkiResolver)
+// AddPublicKeyExtractor add a new PKI resolver
+func (e *EndpointService) AddPublicKeyExtractor(publicKeyExtractor PublicKeyExtractor) error {
+	return e.es.AddPublicKeyExtractor(publicKeyExtractor)
+}
+
+func (e *EndpointService) SetPublicKeyIDSynthesizer(publicKeyIDSynthesizer PublicKeyIDSynthesizer) {
+	e.es.SetPublicKeyIDSynthesizer(publicKeyIDSynthesizer)
 }
 
 // GetEndpointService returns an instance of the endpoint service.
 // It panics, if no instance is found.
 func GetEndpointService(sp ServiceProvider) *EndpointService {
-	return &EndpointService{es: driver.GetEndpointService(sp)}
+	return NewEndpointService(driver.GetEndpointService(sp))
 }

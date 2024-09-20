@@ -7,14 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 package main
 
 import (
-	"bytes"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
 
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gexec"
 )
@@ -35,15 +34,13 @@ func TestArtifactsGen(t *testing.T) {
 	Expect(err).NotTo(HaveOccurred())
 	defer gexec.CleanupBuildArtifacts()
 
-	tmpDir, err := ioutil.TempDir("", t.Name())
+	tmpDir, err := os.MkdirTemp("", t.Name())
 	Expect(err).NotTo(HaveOccurred())
 
 	defer os.RemoveAll(tmpDir)
 
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
 	topologyFolder := filepath.Join("testdata", "fabric_iou.yaml")
-	session, err := gexec.Start(exec.Command(cli, "artifactsgen", "gen", "-t", topologyFolder, "-o", tmpDir), stdout, stderr)
+	session, err := gexec.Start(exec.Command(cli, "artifactsgen", "gen", "-t", topologyFolder, "-o", tmpDir), GinkgoWriter, GinkgoWriter)
 	Expect(err).NotTo(HaveOccurred())
 	Eventually(session, time.Minute*2).Should(gexec.Exit(0))
 

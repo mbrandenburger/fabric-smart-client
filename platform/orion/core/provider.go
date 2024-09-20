@@ -8,57 +8,93 @@ package core
 
 import (
 	"context"
-	"reflect"
 	"sync"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/core/generic"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/core/generic/config"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/driver"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	driver2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/driver"
+	driver3 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/events"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/kvs"
+	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
 	logger = flogging.MustGetLogger("orion-sdk.core")
-	key    = reflect.TypeOf((*driver.OrionNetworkServiceProvider)(nil))
 )
 
-type onsProvider struct {
-	sp     view.ServiceProvider
-	config *Config
-	ctx    context.Context
+type ONSProvider struct {
+	configService driver2.ConfigService
+	config        *Config
+	ctx           context.Context
+	kvss          *kvs.KVS
+	publisher     events.Publisher
+	subscriber    events.Subscriber
 
-	networksMutex sync.Mutex
-	networks      map[string]driver.OrionNetworkService
+	networksMutex           sync.Mutex
+	networks                map[string]driver.OrionNetworkService
+	drivers                 []driver3.NamedDriver
+	tracerProvider          trace.TracerProvider
+	networkConfigProvider   driver.NetworkConfigProvider
+	listenerManagerProvider driver.ListenerManagerProvider
 }
 
-func NewOrionNetworkServiceProvider(sp view.ServiceProvider, config *Config) (*onsProvider, error) {
-	provider := &onsProvider{
-		sp:       sp,
-		config:   config,
-		networks: map[string]driver.OrionNetworkService{},
+func NewOrionNetworkServiceProvider(configService driver2.ConfigService, config *Config, kvss *kvs.KVS, publisher events.Publisher, subscriber events.Subscriber, tracerProvider trace.TracerProvider, drivers []driver3.NamedDriver, networkConfigProvider driver.NetworkConfigProvider, listenerManagerProvider driver.ListenerManagerProvider) (*ONSProvider, error) {
+	provider := &ONSProvider{
+		configService:           configService,
+		config:                  config,
+		kvss:                    kvss,
+		publisher:               publisher,
+		subscriber:              subscriber,
+		networks:                map[string]driver.OrionNetworkService{},
+		drivers:                 drivers,
+		tracerProvider:          tracerProvider,
+		networkConfigProvider:   networkConfigProvider,
+		listenerManagerProvider: listenerManagerProvider,
 	}
 	return provider, nil
 }
 
-func (p *onsProvider) Start(ctx context.Context) error {
+func (p *ONSProvider) Start(ctx context.Context) error {
 	p.ctx = ctx
+	for _, name := range p.config.Names() {
+		fns, err := p.OrionNetworkService(name)
+		if err != nil {
+			return errors.Wrapf(err, "failed to start orion network service [%s]", name)
+		}
+		if err := fns.Committer().Start(ctx); err != nil {
+			return errors.WithMessagef(err, "failed to start committer on orion network service [%s]", name)
+		}
+		if err := fns.DeliveryService().StartDelivery(ctx); err != nil {
+			return errors.WithMessagef(err, "failed to start delivery on orion network service [%s]", name)
+		}
+	}
 	return nil
 }
 
-func (p *onsProvider) Stop() error {
+func (p *ONSProvider) Stop() error {
+	for _, name := range p.config.Names() {
+		fns, err := p.OrionNetworkService(name)
+		if err != nil {
+			return errors.Wrapf(err, "failed to start orion network service [%s]", name)
+		}
+		fns.DeliveryService().Stop()
+	}
 	return nil
 }
 
-func (p *onsProvider) Names() []string {
+func (p *ONSProvider) Names() []string {
 	return p.config.Names()
 }
 
-func (p *onsProvider) DefaultName() string {
+func (p *ONSProvider) DefaultName() string {
 	return p.config.DefaultName()
 }
 
-func (p *onsProvider) OrionNetworkService(network string) (driver.OrionNetworkService, error) {
+func (p *ONSProvider) OrionNetworkService(network string) (driver.OrionNetworkService, error) {
 	p.networksMutex.Lock()
 	defer p.networksMutex.Unlock()
 
@@ -79,20 +115,16 @@ func (p *onsProvider) OrionNetworkService(network string) (driver.OrionNetworkSe
 	return net, nil
 }
 
-func (p *onsProvider) newONS(network string) (driver.OrionNetworkService, error) {
-	c, err := config.New(view.GetConfigService(p.sp), network, network == p.config.defaultName)
+func (p *ONSProvider) newONS(network string) (driver.OrionNetworkService, error) {
+	c, err := config.New(p.configService, network, network == p.config.defaultName)
 	if err != nil {
 		return nil, err
 	}
 
-	return generic.NewNetwork(p.ctx, p.sp, c, network)
-}
-
-func GetOrionNetworkServiceProvider(sp view.ServiceProvider) driver.OrionNetworkServiceProvider {
-	s, err := sp.GetService(key)
+	networkConfig, err := p.networkConfigProvider.GetNetworkConfig(network)
 	if err != nil {
-		logger.Errorf("Failed to get service [%s]: [%s]", key, err)
-		return nil
+		return nil, err
 	}
-	return s.(driver.OrionNetworkServiceProvider)
+
+	return generic.NewNetwork(p.ctx, p.kvss, p.publisher, p.subscriber, p.tracerProvider, c, network, p.drivers, networkConfig, p.listenerManagerProvider.NewManager())
 }

@@ -7,7 +7,6 @@ SPDX-License-Identifier: Apache-2.0
 package monitoring
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -72,16 +71,16 @@ func (n *Extension) GenerateArtifacts() {
 	Expect(err).NotTo(HaveOccurred())
 	Expect(os.MkdirAll(n.configFileDir(), 0o755)).NotTo(HaveOccurred())
 	Expect(os.MkdirAll(n.prometheusConfigDir(), 0o755)).NotTo(HaveOccurred())
-	Expect(ioutil.WriteFile(n.prometheusConfigFilePath(), configYAML, 0o644)).NotTo(HaveOccurred())
+	Expect(os.WriteFile(n.prometheusConfigFilePath(), configYAML, 0o644)).NotTo(HaveOccurred())
 
 	// store grafana configuration
 	for _, dir := range n.grafanaDirPaths() {
 		Expect(os.MkdirAll(dir, 0o755)).NotTo(HaveOccurred())
 	}
-	Expect(ioutil.WriteFile(n.grafanaProvisioningDashboardFilePath(), []byte(DashboardTemplate), 0o644)).NotTo(HaveOccurred())
-	Expect(ioutil.WriteFile(n.grafanaProvisioningDatasourceFilePath(), []byte(DatasourceTemplate), 0o644)).NotTo(HaveOccurred())
-	Expect(ioutil.WriteFile(n.grafanaDashboardFabricBackendFilePath(), []byte(DashboardFabricBackendTemplate), 0o644)).NotTo(HaveOccurred())
-	Expect(ioutil.WriteFile(n.grafanaDashboardFabricBusinessFilePath(), []byte(DashboardFabricBusinessTemplate), 0o644)).NotTo(HaveOccurred())
+	Expect(os.WriteFile(n.grafanaProvisioningDashboardFilePath(), []byte(DashboardTemplate), 0o644)).NotTo(HaveOccurred())
+	Expect(os.WriteFile(n.grafanaProvisioningDatasourceFilePath(), []byte(DatasourceTemplate), 0o644)).NotTo(HaveOccurred())
+	Expect(os.WriteFile(n.grafanaDashboardFabricBackendFilePath(), []byte(DashboardFabricBackendTemplate), 0o644)).NotTo(HaveOccurred())
+	Expect(os.WriteFile(n.grafanaDashboardFabricBusinessFilePath(), []byte(DashboardFabricBusinessTemplate), 0o644)).NotTo(HaveOccurred())
 }
 
 func (n *Extension) PostRun(bool) {
@@ -143,9 +142,9 @@ func (n *Extension) fscScrapes(p *Prometheus) {
 				},
 			},
 			TLSConfig: &TLSConfig{
-				CAFile:             replace(platform.NodeLocalTLSDir(peer) + "/ca.crt"),
-				CertFile:           replace(platform.NodeLocalTLSDir(peer) + "/server.crt"),
-				KeyFile:            replace(platform.NodeLocalTLSDir(peer) + "/server.key"),
+				CAFile:             replace(platform.NodeLocalTLSDir(peer.Peer) + "/ca.crt"),
+				CertFile:           replace(platform.NodeLocalTLSDir(peer.Peer) + "/server.crt"),
+				KeyFile:            replace(platform.NodeLocalTLSDir(peer.Peer) + "/server.key"),
 				ServerName:         "",
 				InsecureSkipVerify: true,
 			},

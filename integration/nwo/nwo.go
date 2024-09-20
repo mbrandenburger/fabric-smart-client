@@ -17,8 +17,10 @@ import (
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/context"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	. "github.com/onsi/gomega"
+	v1 "github.com/prometheus/client_golang/api/prometheus/v1"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/grouper"
 )
@@ -113,19 +115,35 @@ func (n *NWO) Start() {
 	n.Members = members
 	n.ViewMembers = fscMembers
 
-	logger.Infof("Run nodes...")
+	// store PIDs of all processes
+	f, err := os.Create(filepath.Join(n.ctx.RootDir(), "pids.txt"))
+	Expect(err).NotTo(HaveOccurred())
+	defer func() {
+		// write PIDs to file
+		Expect(f.Sync()).NotTo(HaveOccurred())
+		Expect(f.Close()).NotTo(HaveOccurred())
+	}()
+
+	logger.Infof("Run platform nodes...")
 
 	// Execute members on their own stuff...
 	Runner := grouper.NewOrdered(n.TerminationSignal, members)
 	process := ifrit.Invoke(Runner)
 	n.Processes = append(n.Processes, process)
 	Eventually(process.Ready(), n.StartEventuallyTimeout).Should(BeClosed())
+	n.storePIDs(f, members)
 
 	logger.Infof("Post execution for nodes...")
 	for _, platform := range n.Platforms {
 		if platform.Type() != "fsc" {
 			platform.PostRun(n.isLoading)
 		}
+	}
+
+	// deal with fsc nodes separately
+	if len(fscMembers) == 0 {
+		logger.Infof("Skipping starting FSC nodes and post execution as no FSC members are defined")
+		return
 	}
 
 	// Execute the fsc members in isolation so can be stopped and restarted as needed
@@ -139,14 +157,7 @@ func (n *NWO) Start() {
 		n.Processes = append(n.Processes, process)
 		n.FSCProcesses = append(n.FSCProcesses, process)
 	}
-
-	// store PIDs of all processes
-	f, err := os.Create(filepath.Join(n.ctx.RootDir(), "pids.txt"))
-	Expect(err).NotTo(HaveOccurred())
-	n.storePIDs(f, members)
 	n.storePIDs(f, fscMembers)
-	Expect(f.Sync()).NotTo(HaveOccurred())
-	Expect(f.Close()).NotTo(HaveOccurred())
 
 	logger.Infof("Post execution for FSC nodes...")
 	for _, platform := range n.Platforms {
@@ -174,33 +185,33 @@ func (n *NWO) Stop() {
 }
 
 func (n *NWO) StopFSCNode(id string) {
-	logger.Infof("Stopping fsc node [%s]...", id)
+	logger.Infof("Search FSC node [%s]...", id)
 	for _, member := range n.ViewMembers {
-		if strings.HasSuffix(member.Name, id) {
+		if strings.HasPrefix(member.Name, fmt.Sprintf("fsc.%s.", id)) {
+			logger.Infof("FSC node [%s] found. Stopping...", id)
 			member.Runner.(*runner.Runner).Stop()
-			logger.Infof("Stopping fsc node [%s:%s] done", member.Name, id)
+			logger.Infof("FSC node [%s:%s] stopped", member.Name, id)
 			return
 		}
 	}
-	logger.Infof("Stopping fsc node [%s]...done", id)
+	logger.Infof("FSC node [%s] not found", id)
 }
 
 func (n *NWO) StartFSCNode(id string) {
-	logger.Infof("Starting fsc node [%s]...", id)
-	for _, member := range n.ViewMembers {
-		if strings.HasSuffix(member.Name, id) {
-			runner := grouper.NewOrdered(syscall.SIGTERM, []grouper.Member{{
-				Name: id, Runner: member.Runner.(*runner.Runner).Clone(),
-			}})
-			member.Runner = runner
-			process := ifrit.Invoke(runner)
+	logger.Infof("Search FSC node [%s]...", id)
+	for i, member := range n.ViewMembers {
+		if strings.HasPrefix(member.Name, fmt.Sprintf("fsc.%s.", id)) {
+			logger.Infof("FSC node [%s] found. Starting...", id)
+			member.Runner = member.Runner.(*runner.Runner).Clone()
+			n.ViewMembers[i] = member
+			process := ifrit.Invoke(member.Runner)
 			Eventually(process.Ready(), n.StartEventuallyTimeout).Should(BeClosed())
 			n.Processes = append(n.Processes, process)
-			logger.Infof("Starting fsc node [%s:%s] done", member.Name, id)
+			logger.Infof("FSC node [%s:%s] started", member.Name, id)
 			return
 		}
 	}
-	logger.Info("Starting fsc node [%s]...done", id)
+	logger.Infof("FSC node [%s] not found", id)
 }
 
 func (n *NWO) storePIDs(f *os.File, members grouper.Members) {
@@ -214,4 +225,13 @@ func (n *NWO) storePIDs(f *os.File, members grouper.Members) {
 			n.storePIDs(f, r.Members())
 		}
 	}
+}
+
+func (n *NWO) PrometheusAPI() (v1.API, error) {
+	for _, platform := range n.Platforms {
+		if metricsPlatform, ok := platform.(*monitoring.Platform); ok {
+			return metricsPlatform.PrometheusAPI(), nil
+		}
+	}
+	return nil, fmt.Errorf("no Prometheus API available on any platform")
 }

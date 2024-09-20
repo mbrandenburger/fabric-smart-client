@@ -10,7 +10,6 @@ import (
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
-	"github.com/hyperledger-labs/orion-server/pkg/types"
 	"github.com/pkg/errors"
 )
 
@@ -71,7 +70,7 @@ func (lt *LoadedTransaction) CoSignAndClose() ([]byte, error) {
 	return t.CoSignAndClose()
 }
 
-func (lt *LoadedTransaction) Reads() []*types.DataRead {
+func (lt *LoadedTransaction) Reads() []*orion.DataRead {
 	t, err := lt.getLoadedDataTx()
 	if err != nil {
 		return nil
@@ -79,7 +78,7 @@ func (lt *LoadedTransaction) Reads() []*types.DataRead {
 	return t.Reads()[lt.Namespace]
 }
 
-func (lt *LoadedTransaction) Writes() []*types.DataWrite {
+func (lt *LoadedTransaction) Writes() []*orion.DataWrite {
 	t, err := lt.getLoadedDataTx()
 	if err != nil {
 		return nil
@@ -107,7 +106,10 @@ func (lt *LoadedTransaction) getLoadedDataTx() (*orion.LoadedTransaction, error)
 	if lt.LoadedDataTx == nil {
 		var err error
 		// set tx id
-		ons := lt.GetONS()
+		ons, err := lt.GetONS()
+		if err != nil {
+			return nil, err
+		}
 		lt.LoadedDataTx, err = ons.TransactionManager().NewLoadedTransaction(lt.Env, string(lt.Creator))
 		if err != nil {
 			return nil, errors.WithMessagef(err, "failed getting data tx for [%s]", lt.Creator)
@@ -116,9 +118,13 @@ func (lt *LoadedTransaction) getLoadedDataTx() (*orion.LoadedTransaction, error)
 	return lt.LoadedDataTx, nil
 }
 
-func (lt *LoadedTransaction) GetONS() *orion.NetworkService {
+func (lt *LoadedTransaction) GetONS() (*orion.NetworkService, error) {
 	if lt.ONS == nil {
-		lt.ONS = orion.GetOrionNetworkService(lt.SP, lt.Network)
+		ons, err := orion.GetOrionNetworkService(lt.SP, lt.Network)
+		if err != nil {
+			return nil, err
+		}
+		lt.ONS = ons
 	}
-	return lt.ONS
+	return lt.ONS, nil
 }

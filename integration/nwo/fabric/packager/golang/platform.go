@@ -12,7 +12,6 @@ import (
 	"compress/gzip"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"os/exec"
 	"path"
@@ -23,14 +22,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/ccmetadata"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/replacer"
 	pb "github.com/hyperledger/fabric-protos-go/peer"
 	"github.com/hyperledger/fabric/core/chaincode/platforms/util"
 	"github.com/pkg/errors"
-	"github.com/spf13/viper"
-
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/ccmetadata"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fabric/packager/replacer"
 )
+
+//var logger = flogging.MustGetLogger("nwo.fabric")
 
 // Platform for chaincodes written in Go
 type Platform struct{}
@@ -79,7 +78,7 @@ func (p *Platform) ValidateCodePackage(code []byte) error {
 	is := bytes.NewReader(code)
 	gr, err := gzip.NewReader(is)
 	if err != nil {
-		return fmt.Errorf("failure opening codepackage gzip stream: %s", err)
+		return errors.Errorf("failure opening codepackage gzip stream: %s", err)
 	}
 
 	re := regexp.MustCompile(`^(src|META-INF)/`)
@@ -95,13 +94,13 @@ func (p *Platform) ValidateCodePackage(code []byte) error {
 
 		// maintain check for conforming paths for validation
 		if !re.MatchString(header.Name) {
-			return fmt.Errorf("illegal file name in payload: %s", header.Name)
+			return errors.Errorf("illegal file name in payload: %s", header.Name)
 		}
 
 		// only files and directories; no links or special files
 		mode := header.FileInfo().Mode()
 		if mode&^(os.ModeDir|0o777) != 0 {
-			return fmt.Errorf("illegal file mode in payload: %s", header.Name)
+			return errors.Errorf("illegal file mode in payload: %s", header.Name)
 		}
 	}
 
@@ -146,6 +145,7 @@ func (p *Platform) GetDeploymentPayload(codepath string, replacer replacer.Func)
 				Name: path.Join("src", pkg.ImportPath, filename),
 				Path: filepath.Join(pkg.Dir, filename),
 			}
+			//logger.Infof("add source [%s][%s]", sd.Name, sd.Path)
 			fileMap[sd.Name] = sd
 		}
 	}
@@ -179,12 +179,12 @@ func (p *Platform) GetDeploymentPayload(codepath string, replacer replacer.Func)
 
 		if len(raw) != 0 {
 			if err := WriteBytesToPackage(raw, file.Path, file.Name, tw); err != nil {
-				return nil, fmt.Errorf("error writing %s to tar: %s", file.Name, err)
+				return nil, errors.Errorf("error writing %s to tar: %s", file.Name, err)
 			}
 		} else {
 			err = util.WriteFileToPackage(file.Path, file.Name, tw)
 			if err != nil {
-				return nil, fmt.Errorf("error writing %s to tar: %s", file.Name, err)
+				return nil, errors.Errorf("error writing %s to tar: %s", file.Name, err)
 			}
 		}
 	}
@@ -198,66 +198,6 @@ func (p *Platform) GetDeploymentPayload(codepath string, replacer replacer.Func)
 	}
 
 	return payload.Bytes(), nil
-}
-
-func (p *Platform) GenerateDockerfile() (string, error) {
-	var buf []string
-	buf = append(buf, "FROM "+util.GetDockerImageFromConfig("chaincode.golang.runtime"))
-	buf = append(buf, "ADD binpackage.tar /usr/local/bin")
-
-	return strings.Join(buf, "\n"), nil
-}
-
-const (
-	staticLDFlagsOpts  = "-ldflags \"-linkmode external -extldflags '-static'\""
-	dynamicLDFlagsOpts = ""
-)
-
-func getLDFlagsOpts() string {
-	if viper.GetBool("chaincode.golang.dynamicLink") {
-		return dynamicLDFlagsOpts
-	}
-	return staticLDFlagsOpts
-}
-
-var buildScript = `
-set -e
-if [ -f "/chaincode/input/src/go.mod" ] && [ -d "/chaincode/input/src/vendor" ]; then
-    cd /chaincode/input/src
-    GO111MODULE=on go build -v -mod=vendor %[1]s -o /chaincode/output/chaincode %[2]s
-elif [ -f "/chaincode/input/src/go.mod" ]; then
-    cd /chaincode/input/src
-    GO111MODULE=on go build -v -mod=readonly %[1]s -o /chaincode/output/chaincode %[2]s
-elif [ -f "/chaincode/input/src/%[2]s/go.mod" ] && [ -d "/chaincode/input/src/%[2]s/vendor" ]; then
-    cd /chaincode/input/src/%[2]s
-    GO111MODULE=on go build -v -mod=vendor %[1]s -o /chaincode/output/chaincode .
-elif [ -f "/chaincode/input/src/%[2]s/go.mod" ]; then
-    cd /chaincode/input/src/%[2]s
-    GO111MODULE=on go build -v -mod=readonly %[1]s -o /chaincode/output/chaincode .
-else
-	go mod init
-	go mod tidy
-    GOPATH=/chaincode/input:$GOPATH go build -v %[1]s -o /chaincode/output/chaincode %[2]s
-fi
-echo Done!
-`
-
-func (p *Platform) DockerBuildOptions(path string) (util.DockerBuildOptions, error) {
-	env := []string{}
-	for _, key := range []string{"GOPROXY", "GOSUMDB"} {
-		if val, ok := os.LookupEnv(key); ok {
-			env = append(env, fmt.Sprintf("%s=%s", key, val))
-			continue
-		}
-		if key == "GOPROXY" {
-			env = append(env, "GOPROXY=https://proxy.golang.org")
-		}
-	}
-	ldFlagOpts := getLDFlagsOpts()
-	return util.DockerBuildOptions{
-		Cmd: fmt.Sprintf(buildScript, ldFlagOpts, path),
-		Env: env,
-	}, nil
 }
 
 // CodeDescriptor describes the code we're packaging.
@@ -482,6 +422,7 @@ func findSource(cd *CodeDescriptor) (SourceMap, error) {
 		}
 
 		name = filepath.ToSlash(name)
+		//logger.Infof("add source [%s][%s]", name, path)
 		sources[name] = SourceDescriptor{Name: name, Path: path}
 		return nil
 	}
@@ -494,7 +435,7 @@ func findSource(cd *CodeDescriptor) (SourceMap, error) {
 }
 
 func validateMetadata(name, path string) error {
-	contents, err := ioutil.ReadFile(path)
+	contents, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}

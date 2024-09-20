@@ -10,16 +10,16 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
+	"os"
 	"sync"
 	"time"
 
-	"go.uber.org/zap/zapcore"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
-
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+	"go.uber.org/zap/zapcore"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/keepalive"
 )
 
@@ -96,11 +96,14 @@ func NewGRPCClient(config ClientConfig) (*Client, error) {
 		Timeout:             config.KaOpts.ClientTimeout,
 		PermitWithoutStream: true,
 	}
+	client.dialOpts = append(client.dialOpts, grpc.WithStatsHandler(otelgrpc.NewClientHandler()))
 	// set keepalive
 	client.dialOpts = append(client.dialOpts, grpc.WithKeepaliveParams(kap))
 	// Unless asynchronous connect is set, make connection establishment blocking.
 	if !config.AsyncConnect {
+		//lint:ignore SA1019 Refactor in next change
 		client.dialOpts = append(client.dialOpts, grpc.WithBlock())
+		//lint:ignore SA1019 Refactor in next change
 		client.dialOpts = append(client.dialOpts, grpc.FailOnNonTempDialError(true))
 	}
 	client.timeout = config.Timeout
@@ -111,13 +114,76 @@ func NewGRPCClient(config ClientConfig) (*Client, error) {
 	return client, nil
 }
 
+type TLSClientConfig struct {
+	TLSClientAuthRequired bool
+	TLSClientKeyFile      string
+	TLSClientCertFile     string
+}
+
+func CreateSecOpts(connConfig ConnectionConfig, cliConfig TLSClientConfig) (*SecureOptions, error) {
+	return createSecOpts(connConfig, false, &cliConfig)
+}
+
+func createTLSSecOpts(connConfig ConnectionConfig) (*SecureOptions, error) {
+	return createSecOpts(connConfig, true, nil)
+}
+
+func createSecOpts(connConfig ConnectionConfig, forceTLS bool, cliConfig *TLSClientConfig) (*SecureOptions, error) {
+	var certs [][]byte
+	if connConfig.TLSEnabled {
+		switch {
+		case len(connConfig.TLSRootCertFile) != 0:
+			caPEM, err := os.ReadFile(connConfig.TLSRootCertFile)
+			if err != nil {
+				return nil, errors.WithMessagef(err, "unable to load TLS cert from %s", connConfig.TLSRootCertFile)
+			}
+			certs = append(certs, caPEM)
+		case len(connConfig.TLSRootCertBytes) != 0:
+			certs = connConfig.TLSRootCertBytes
+		default:
+			return nil, errors.New("missing TLSRootCertFile in client config")
+		}
+	}
+
+	tlsEnabled := connConfig.TLSEnabled || forceTLS
+	secOpts := &SecureOptions{
+		UseTLS:            tlsEnabled,
+		RequireClientCert: !tlsEnabled && cliConfig.TLSClientAuthRequired,
+	}
+
+	if secOpts.RequireClientCert {
+		keyPEM, err := os.ReadFile(cliConfig.TLSClientKeyFile)
+		if err != nil {
+			return nil, errors.WithMessage(err, "unable to load fabric.tls.clientKey.file")
+		}
+		secOpts.Key = keyPEM
+		certPEM, err := os.ReadFile(cliConfig.TLSClientCertFile)
+		if err != nil {
+			return nil, errors.WithMessage(err, "unable to load fabric.tls.clientCert.file")
+		}
+		secOpts.Certificate = certPEM
+	}
+
+	if tlsEnabled {
+		if len(certs) == 0 {
+			return nil, errors.New("tls root cert file must be set")
+		}
+		secOpts.ServerRootCAs = certs
+	}
+	return secOpts, nil
+}
+
 // CreateGRPCClient returns a comm.Client based on toke client config
 func CreateGRPCClient(config *ConnectionConfig) (*Client, error) {
+	secOpts, err := createTLSSecOpts(*config)
+	if err != nil {
+		return nil, err
+	}
 	timeout := config.ConnectionTimeout
 	if timeout <= 0 {
 		timeout = DefaultConnectionTimeout
 	}
-	clientConfig := ClientConfig{
+	return NewGRPCClient(ClientConfig{
 		KaOpts: KeepaliveOptions{
 			ClientInterval:    60 * time.Second,
 			ClientTimeout:     60 * time.Second,
@@ -126,32 +192,8 @@ func CreateGRPCClient(config *ConnectionConfig) (*Client, error) {
 			ServerMinInterval: 60 * time.Second,
 		},
 		Timeout: timeout,
-	}
-
-	if config.TLSEnabled {
-		var certs [][]byte
-		switch {
-		case len(config.TLSRootCertFile) != 0:
-			caPEM, err := ioutil.ReadFile(config.TLSRootCertFile)
-			if err != nil {
-				return nil, errors.WithMessagef(err, "unable to load TLS cert from %s", config.TLSRootCertFile)
-			}
-			certs = append(certs, caPEM)
-		case len(config.TLSRootCertBytes) != 0:
-			certs = config.TLSRootCertBytes
-		default:
-			return nil, errors.New("missing TLSRootCertFile in client config")
-		}
-
-		secOpts := SecureOptions{
-			UseTLS:            true,
-			ServerRootCAs:     certs,
-			RequireClientCert: false,
-		}
-		clientConfig.SecOpts = secOpts
-	}
-
-	return NewGRPCClient(clientConfig)
+		SecOpts: *secOpts,
+	})
 }
 
 func (client *Client) parseSecureOptions(opts SecureOptions) error {
@@ -271,7 +313,7 @@ func (client *Client) NewConnection(address string, tlsOptions ...TLSOption) (*g
 			},
 		))
 	} else {
-		dialOpts = append(dialOpts, grpc.WithInsecure())
+		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 
 	dialOpts = append(dialOpts, grpc.WithDefaultCallOptions(
@@ -281,6 +323,7 @@ func (client *Client) NewConnection(address string, tlsOptions ...TLSOption) (*g
 
 	ctx, cancel := context.WithTimeout(context.Background(), client.timeout)
 	defer cancel()
+	//lint:ignore SA1019 Refactor in next change
 	conn, err := grpc.DialContext(ctx, address, dialOpts...)
 	if err != nil {
 		commLogger.Debugf("failed to create new connection to [%s][%v]: [%s]", address, dialOpts, errors.WithStack(err))

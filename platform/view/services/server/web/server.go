@@ -10,14 +10,13 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
-	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/server/web/middleware"
+	"github.com/pkg/errors"
 )
 
 //go:generate counterfeiter -o fakes/logger.go -fake-name Logger . Logger
@@ -34,6 +33,7 @@ type TLS struct {
 	Enabled           bool
 	CertFile          string
 	KeyFile           string
+	ClientAuth        bool
 	ClientCACertFiles []string
 }
 
@@ -49,12 +49,12 @@ func (t TLS) Config() (*tls.Config, error) {
 	}
 
 	if len(t.ClientCACertFiles) == 0 {
-		return nil, fmt.Errorf("client TLS CA certificate pool must not be empty")
+		return nil, errors.Errorf("client TLS CA certificate pool must not be empty")
 	}
 
 	caCertPool := x509.NewCertPool()
 	for _, caPath := range t.ClientCACertFiles {
-		caPem, err := ioutil.ReadFile(caPath)
+		caPem, err := os.ReadFile(caPath)
 		if err != nil {
 			return nil, err
 		}
@@ -74,8 +74,12 @@ func (t TLS) Config() (*tls.Config, error) {
 		},
 		MinVersion: tls.VersionTLS12,
 		MaxVersion: tls.VersionTLS13,
-		ClientAuth: tls.RequireAndVerifyClientCert,
 		ClientCAs:  caCertPool,
+	}
+	if t.ClientAuth {
+		tlsConfig.ClientAuth = tls.RequireAndVerifyClientCert
+	} else {
+		tlsConfig.ClientAuth = tls.VerifyClientCertIfGiven
 	}
 	return tlsConfig, nil
 }
@@ -183,7 +187,10 @@ func (s *Server) listen() (net.Listener, error) {
 		return nil, err
 	}
 	if tlsConfig != nil {
+		s.logger.Infof("TLS enabled")
 		listener = tls.NewListener(listener, tlsConfig)
+	} else {
+		s.logger.Infof("TLS disabled")
 	}
 	return listener, nil
 }

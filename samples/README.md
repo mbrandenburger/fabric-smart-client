@@ -2,7 +2,7 @@
 
 Samples are a collection of small and simple apps that demonstrate how to use the library.
 
-To run the samples, we recommend to use `go 1.17` or later. You will also need docker as it is needed by Fabric.
+To run the samples, we recommend to use `go 1.20`. You will also need docker as it is needed by Fabric.
 To make sure you have all the required docker images, you can run `make docker-images` in the
 Fabric Smart Client repository folder (`$FSC_PATH`).
 
@@ -50,3 +50,12 @@ Topology logging levels can be configured with `SetLogging` method. However, it 
 If you are using FSC outside of ginkgo tests need to disable logging, or use a stream other then `stdout`, you can use the following two methods.
 - `flogging.Global.SetWriter()` allows to modify the stream used for FSC log messages.
 - Assigning `ginkgo.GinkgoWriter` the required stream redirects the command output, such as Fabric node.
+
+## Further information
+
+Almost all the samples and integration tests require the fabric binaries to be downloaded and the environment variable `FAB_BINS` set to point to the directory where these binaries are stored. One way to ensure this is to execute the following in the root of the fabric-smart-client project
+
+```shell
+make download-fabric
+export FAB_BINS=$PWD/../fabric/bin
+```

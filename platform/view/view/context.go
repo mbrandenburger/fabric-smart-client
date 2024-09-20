@@ -6,7 +6,11 @@ SPDX-License-Identifier: Apache-2.0
 
 package view
 
-import "context"
+import (
+	"context"
+
+	"go.opentelemetry.io/otel/trace"
+)
 
 // RunViewOptions models the options to run a view
 type RunViewOptions struct {
@@ -66,10 +70,23 @@ func WithSameContext() RunViewOption {
 type MutableContext interface {
 	// ResetSessions disposes all sessions created in this context
 	ResetSessions() error
+	// PutService registers a service in this context
+	PutService(v interface{}) error
+}
+
+// SpanStarter creates new spans
+type SpanStarter interface {
+	// StartSpanFrom creates a new child span from the passed context
+	StartSpanFrom(ctx context.Context, name string, opts ...trace.SpanStartOption) (context.Context, trace.Span)
+
+	// StartSpan creates a new child span from the current context
+	StartSpan(name string, opts ...trace.SpanStartOption) trace.Span
 }
 
 // Context gives a view information about the environment in which it is in execution
 type Context interface {
+	SpanStarter
+
 	// GetService returns an instance of the given type
 	GetService(v interface{}) (interface{}, error)
 

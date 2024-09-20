@@ -7,40 +7,20 @@ SPDX-License-Identifier: Apache-2.0
 package hash
 
 import (
-	"crypto/sha256"
 	"encoding/base64"
+
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils"
 )
 
 type Hashable []byte
 
-func (id Hashable) String() string {
+func (id Hashable) Raw() []byte {
 	if len(id) == 0 {
-		return ""
+		return nil
 	}
-	hash := sha256.New()
-	n, err := hash.Write(id)
-	if n != len(id) {
-		panic("hash failure")
-	}
-	if err != nil {
-		panic(err)
-	}
-	digest := hash.Sum(nil)
-	return base64.StdEncoding.EncodeToString(digest)
+	return utils.MustGet(utils.SHA256(id))
 }
 
-func (id Hashable) RawString() string {
-	if len(id) == 0 {
-		return ""
-	}
-	hash := sha256.New()
-	n, err := hash.Write(id)
-	if n != len(id) {
-		panic("hash failure")
-	}
-	if err != nil {
-		panic(err)
-	}
-	digest := hash.Sum(nil)
-	return string(digest)
-}
+func (id Hashable) String() string { return base64.StdEncoding.EncodeToString(id.Raw()) }
+
+func (id Hashable) RawString() string { return string(id.Raw()) }

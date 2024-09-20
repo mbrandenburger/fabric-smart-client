@@ -17,11 +17,14 @@ import (
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/core/generic/rwset"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/core/generic/transaction"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/driver"
-	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db"
+	driver2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/events"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/kvs"
 	"github.com/hyperledger-labs/orion-server/pkg/types"
 	"github.com/pkg/errors"
+	"go.opentelemetry.io/otel/trace"
 )
 
 var (
@@ -30,7 +33,6 @@ var (
 )
 
 type network struct {
-	sp  view2.ServiceProvider
 	ctx context.Context
 
 	config *config2.Config
@@ -46,18 +48,13 @@ type network struct {
 	transactionService driver.TransactionService
 	finality           driver.Finality
 	committer          driver.Committer
+	deliveryService    driver.DeliveryService
 }
 
-func NewNetwork(
-	ctx context.Context,
-	sp view2.ServiceProvider,
-	config *config2.Config,
-	name string,
-) (*network, error) {
+func NewDB(ctx context.Context, kvss *kvs.KVS, config *config2.Config, name string) (*network, error) {
 	// Load configuration
 	n := &network{
 		ctx:    ctx,
-		sp:     sp,
 		name:   name,
 		config: config,
 	}
@@ -81,64 +78,104 @@ func NewNetwork(
 		config:          config,
 		identityManager: n.identityManager,
 	}
-	n.metadataService = transaction.NewMetadataService(sp, name)
-	n.envelopeService = transaction.NewEnvelopeService(sp, name)
-	n.transactionManager = transaction.NewManager(sp, n.sessionManager)
-	n.transactionService = transaction.NewEndorseTransactionService(sp, name)
-	n.vault, err = NewVault(n.config, name, sp)
+	n.metadataService = transaction.NewMetadataService(kvss, name)
+	n.envelopeService = transaction.NewEnvelopeService(kvss, name)
+	n.transactionManager = transaction.NewManager(n.sessionManager)
+	n.transactionService = transaction.NewEndorseTransactionService(kvss, name)
+	n.processorManager = rwset.NewProcessorManager(n, nil)
+
+	return n, nil
+}
+
+func NewNetwork(ctx context.Context, kvss *kvs.KVS, eventsPublisher events.Publisher, eventsSubscriber events.Subscriber, tracerProvider trace.TracerProvider, config *config2.Config, name string, drivers []driver2.NamedDriver, networkConfig driver.NetworkConfig, listenerManager driver.ListenerManager) (*network, error) {
+	// Load configuration
+	n := &network{
+		ctx:    ctx,
+		name:   name,
+		config: config,
+	}
+	ids, err := config.Identities()
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to load identities")
+	}
+	var dids []*driver.Identity
+	for _, id := range ids {
+		dids = append(dids, &driver.Identity{
+			Name: id.Name,
+			Cert: id.Cert,
+			Key:  id.Key,
+		})
+	}
+	n.identityManager = &IdentityManager{
+		identities:      dids,
+		defaultIdentity: dids[0].Name,
+	}
+	n.sessionManager = &SessionManager{
+		config:          config,
+		identityManager: n.identityManager,
+	}
+	n.metadataService = transaction.NewMetadataService(kvss, name)
+	n.envelopeService = transaction.NewEnvelopeService(kvss, name)
+	n.transactionManager = transaction.NewManager(n.sessionManager)
+	n.transactionService = transaction.NewEndorseTransactionService(kvss, name)
+
+	var d driver2.Driver
+	for _, driver := range drivers {
+		if driver.Name == n.config.VaultPersistenceType() {
+			d = driver.Driver
+			break
+		}
+	}
+	if d == nil {
+		return nil, errors.Errorf("driver %s not found in config", n.config.VaultPersistenceType())
+	}
+
+	persistence, err := db.OpenVersioned(d, name, db.NewPrefixConfig(n.config, n.config.VaultPersistencePrefix()))
+	if err != nil {
+		return nil, errors.Wrapf(err, "failed creating vault")
+	}
+
+	n.vault, err = NewVault(n, persistence, tracerProvider)
 	if err != nil {
 		return nil, errors.WithMessage(err, "failed to create vault")
 	}
-	n.processorManager = rwset.NewProcessorManager(n.sp, n, nil)
-
-	// events
-	eventsPublisher, err := events.GetPublisher(sp)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get event publisher")
-	}
-	eventsSubscriber, err := events.GetSubscriber(sp)
-	if err != nil {
-		return nil, errors.Wrap(err, "failed to get event subscriber")
-	}
+	n.processorManager = rwset.NewProcessorManager(n, nil)
 
 	committer, err := committer.New(
 		name,
 		n.processorManager,
+		n.envelopeService,
 		n.vault,
 		nil,
 		waitForEventTimeout,
 		false,
 		eventsPublisher,
 		eventsSubscriber,
+		tracerProvider,
+		networkConfig,
+		listenerManager,
 	)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed to create committer")
 	}
 	n.committer = committer
 
-	finality, err := finality.NewService(committer)
+	finality, err := finality.NewService(committer, n, tracerProvider)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed to create finality service")
 	}
 	n.finality = finality
 
-	deliveryService, err := delivery2.New(
-		n.ctx,
-		sp,
-		n,
-		func(block *types.AugmentedBlockHeader) (bool, error) {
-			if err := committer.Commit(block); err != nil {
-				return true, err
-			}
-			return false, nil
-		},
-		n.vault,
-		waitForEventTimeout,
-	)
+	deliveryService, err := delivery2.New(n, func(block *types.AugmentedBlockHeader) (bool, error) {
+		if err := committer.Commit(block); err != nil {
+			return true, err
+		}
+		return false, nil
+	}, n.vault, waitForEventTimeout)
 	if err != nil {
 		return nil, errors.WithMessagef(err, "failed to create delivery service")
 	}
-	deliveryService.Start()
+	n.deliveryService = deliveryService
 
 	return n, nil
 }
@@ -185,4 +222,8 @@ func (f *network) Committer() driver.Committer {
 
 func (f *network) Finality() driver.Finality {
 	return f.finality
+}
+
+func (f *network) DeliveryService() driver.DeliveryService {
+	return f.deliveryService
 }

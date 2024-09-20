@@ -7,13 +7,12 @@ SPDX-License-Identifier: Apache-2.0
 package pingpong
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/assert"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracing"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
 )
 
 type Responder struct{}
@@ -31,21 +30,18 @@ func (p *Responder) Call(context view.Context) (interface{}, error) {
 	case <-time.After(5 * time.Second):
 		return nil, errors.New("time out reached")
 	}
-
 	// Respond with a pong if a ping is received, an error otherwise
 	m := string(payload)
 	switch {
 	case m != "ping":
 		// reply with an error
-		err := session.SendError([]byte(fmt.Sprintf("exptectd ping, got %s", m)))
+		err := session.SendError([]byte(fmt.Sprintf("expected ping, got %s", m)))
 		assert.NoError(err)
-		return nil, fmt.Errorf("exptectd ping, got %s", m)
+		return nil, errors.Errorf("expected ping, got %s", m)
 	default:
-		tracing.Get(context).EmitKey(0, "received", "ping")
 		// reply with pong
 		err := session.Send([]byte("pong"))
 		assert.NoError(err)
-		tracing.Get(context).EmitKey(0, "sent", "pong")
 	}
 
 	// Return

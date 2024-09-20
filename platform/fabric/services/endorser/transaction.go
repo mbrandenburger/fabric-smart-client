@@ -9,12 +9,11 @@ package endorser
 import (
 	"bytes"
 
-	"github.com/pkg/errors"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
 	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"github.com/pkg/errors"
 )
 
 type VerifierProvider interface {
@@ -221,4 +220,21 @@ func (t *Transaction) FabricNetworkService() *fabric.NetworkService {
 
 func (t *Transaction) AppendVerifierProvider(vp VerifierProvider) {
 	t.verifierProviders = append(t.verifierProviders, vp)
+}
+
+func (t *Transaction) Envelope() (*fabric.Envelope, error) {
+	return t.Transaction.Envelope()
+}
+
+func (t *Transaction) ProposalResponses() ([][]byte, error) {
+	prs := t.Transaction.ProposalResponses()
+	res := [][]byte{}
+	for _, pr := range prs {
+		prRaw, err := pr.Bytes()
+		if err != nil {
+			return nil, err
+		}
+		res = append(res, prRaw)
+	}
+	return res, nil
 }

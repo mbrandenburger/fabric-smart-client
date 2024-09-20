@@ -7,12 +7,14 @@ SPDX-License-Identifier: Apache-2.0
 package transaction
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils/collections"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/fabricutils"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
-	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
 	pcommon "github.com/hyperledger/fabric-protos-go/common"
 	pb "github.com/hyperledger/fabric-protos-go/peer"
@@ -72,8 +74,8 @@ func (p *SignedProposal) ChaincodeVersion() string {
 }
 
 type Transaction struct {
-	sp               view2.ServiceProvider
-	fns              driver.FabricNetworkService
+	channelProvider  ChannelProvider
+	sigService       driver.SignerService
 	rwset            driver.RWSet
 	channel          driver.Channel
 	signedProposal   *SignedProposal
@@ -183,7 +185,9 @@ func (t *Transaction) SetFromBytes(raw []byte) error {
 	if err != nil {
 		return errors.Wrapf(err, "SetFromBytes: failed unmarshalling payload [%s]", string(raw))
 	}
-	logger.Debugf("set transient [%v]", t.TTransient)
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("set transient [%v]", collections.Keys(t.TTransient))
+	}
 
 	if t.TSignedProposal != nil {
 		// TODO: check the current payload is compatible with the content of the signed proposal
@@ -212,7 +216,7 @@ func (t *Transaction) SetFromBytes(raw []byte) error {
 	}
 
 	// Set the channel
-	ch, err := t.fns.Channel(t.Channel())
+	ch, err := t.channelProvider.Channel(t.Channel())
 	if err != nil {
 		return err
 	}
@@ -223,7 +227,7 @@ func (t *Transaction) SetFromBytes(raw []byte) error {
 
 func (t *Transaction) SetFromEnvelopeBytes(raw []byte) error {
 	// TODO: check the current payload is compatible with the content of the signed proposal
-	upe, err := UnpackEnvelopeFromBytes(raw)
+	upe, _, err := UnpackEnvelopeFromBytes(raw)
 	if err != nil {
 		return err
 	}
@@ -245,7 +249,7 @@ func (t *Transaction) SetFromEnvelopeBytes(raw []byte) error {
 	t.TProposalResponses = upe.ProposalResponses
 
 	// Set the channel
-	ch, err := t.fns.Channel(t.Channel())
+	ch, err := t.channelProvider.Channel(t.Channel())
 	if err != nil {
 		return err
 	}
@@ -304,25 +308,25 @@ func (t *Transaction) SetRWSet() error {
 		logger.Debugf("populate rws from proposal response")
 		results, err := t.Results()
 		if err != nil {
-			return err
+			return errors.WithMessagef(err, "failed to get rws from proposal response")
 		}
-		t.rwset, err = t.channel.GetRWSet(t.ID(), results)
+		t.rwset, err = t.channel.Vault().GetRWSet(t.ID(), results)
 		if err != nil {
-			return err
+			return errors.WithMessagef(err, "failed to populate rws from proposal response")
 		}
 	case len(t.RWSet) != 0:
 		logger.Debugf("populate rws from rwset")
 		var err error
-		t.rwset, err = t.channel.GetRWSet(t.ID(), t.RWSet)
+		t.rwset, err = t.channel.Vault().GetRWSet(t.ID(), t.RWSet)
 		if err != nil {
-			return err
+			return errors.WithMessagef(err, "failed to populate rws from existing rws")
 		}
 	default:
 		logger.Debugf("populate rws from scratch")
 		var err error
-		t.rwset, err = t.channel.NewRWSet(t.ID())
+		t.rwset, err = t.channel.Vault().NewRWSet(t.ID())
 		if err != nil {
-			return err
+			return errors.WithMessagef(err, "failed to create fresh rws")
 		}
 	}
 	return nil
@@ -385,7 +389,9 @@ func (t *Transaction) Bytes() ([]byte, error) {
 	if err := t.Done(); err != nil {
 		return nil, err
 	}
-	logger.Debugf("get transient [%v]", t.TTransient)
+	if logger.IsEnabledFor(zapcore.DebugLevel) {
+		logger.Debugf("get transient [%v]", collections.Keys(t.TTransient))
+	}
 	return json.Marshal(t)
 }
 
@@ -411,7 +417,7 @@ func (t *Transaction) EndorseWithIdentity(identity view.Identity) error {
 		logger.Debugf("endorse transaction [%s] with identity [%s]", t.ID(), identity.String())
 	}
 	// prepare signer
-	s, err := t.fns.SignerService().GetSigner(identity)
+	s, err := t.sigService.GetSigner(identity)
 	if err != nil {
 		return err
 	}
@@ -490,7 +496,7 @@ func (t *Transaction) EndorseProposal() error {
 
 func (t *Transaction) EndorseProposalWithIdentity(identity view.Identity) error {
 	// prepare signer
-	s, err := t.fns.SignerService().GetSigner(identity)
+	s, err := t.sigService.GetSigner(identity)
 	if err != nil {
 		return err
 	}
@@ -510,7 +516,7 @@ func (t *Transaction) EndorseProposalResponse() error {
 
 func (t *Transaction) EndorseProposalResponseWithIdentity(identity view.Identity) error {
 	// prepare signer
-	s, err := t.fns.SignerService().GetSigner(identity)
+	s, err := t.sigService.GetSigner(identity)
 	if err != nil {
 		return err
 	}
@@ -529,7 +535,7 @@ func (t *Transaction) AppendProposalResponse(response driver.ProposalResponse) e
 }
 
 func (t *Transaction) ProposalHasBeenEndorsedBy(party view.Identity) error {
-	verifier, err := t.channel.GetVerifier(party)
+	verifier, err := t.channel.ChannelMembership().GetVerifier(party)
 	if err != nil {
 		return err
 	}
@@ -559,6 +565,20 @@ func (t *Transaction) ProposalResponse() ([]byte, error) {
 		return nil, err
 	}
 	return raw, nil
+}
+
+func (t *Transaction) Envelope() (driver.Envelope, error) {
+	signerID := t.Creator()
+	signer, err := t.sigService.GetSigner(signerID)
+	if err != nil {
+		logger.Errorf("signer not found for %s while creating tx envelope for ordering [%s]", signerID.UniqueID(), err)
+		return nil, errors.Wrapf(err, "signer not found for %s while creating tx envelope for ordering", signerID.UniqueID())
+	}
+	env, err := fabricutils.CreateEndorserSignedTX(&signerWrapper{signerID, signer}, t.Proposal(), t.ProposalResponses()...)
+	if err != nil {
+		return nil, errors.WithMessage(err, "could not assemble transaction")
+	}
+	return NewEnvelopeFromEnv(env)
 }
 
 func (t *Transaction) generateProposal(signer SerializableSigner) error {
@@ -602,8 +622,14 @@ func (t *Transaction) generateProposal(signer SerializableSigner) error {
 }
 
 func (t *Transaction) appendProposalResponse(response *pb.ProposalResponse) error {
-	t.TProposalResponses = append(t.TProposalResponses, response)
+	for _, r := range t.TProposalResponses {
+		if bytes.Equal(r.Endorsement.Endorser, response.Endorsement.Endorser) {
+			logger.Debugf("an endorsement from [%s] found, skip it", view.Identity(r.Endorsement.Endorser))
+			return nil
+		}
+	}
 
+	t.TProposalResponses = append(t.TProposalResponses, response)
 	return nil
 }
 
@@ -617,8 +643,8 @@ func (t *Transaction) getProposalResponse(signer SerializableSigner) (*pb.Propos
 		return nil, err
 	}
 
-	up := t.SignedProposal()
-	if up == nil {
+	signedProposal := t.SignedProposal()
+	if signedProposal == nil {
 		panic("signed proposal must not be nil")
 	}
 	response := &pb.Response{
@@ -626,24 +652,44 @@ func (t *Transaction) getProposalResponse(signer SerializableSigner) (*pb.Propos
 		Message: "",
 		Payload: nil,
 	}
-	prpBytes, err := protoutil.GetBytesProposalResponsePayload(up.ProposalHash(), response, pubSimResBytes, nil, &pb.ChaincodeID{
-		Name:    up.ChaincodeName(),
-		Version: up.ChaincodeVersion(),
-	})
-	logger.Debugf("ProposalResponse [%s][%s]->[%s] \n",
-		base64.StdEncoding.EncodeToString(up.ProposalHash()),
-		base64.StdEncoding.EncodeToString(pubSimResBytes),
-		base64.StdEncoding.EncodeToString(prpBytes),
-	)
-	if err != nil {
-		return nil, errors.WithMessage(err, "failed to create the proposal response")
+
+	version := signedProposal.ChaincodeName()
+	if len(signedProposal.ChaincodeVersion()) == 0 {
+		// fetch current chaincode version
+		chaincode := t.channel.ChaincodeManager().Chaincode(signedProposal.ChaincodeName())
+		var err error
+		version, err = chaincode.Version()
+		if err != nil {
+			return nil, errors.WithMessagef(err, "failed to get chaincode version, proposal didn't contain it")
+		}
 	}
+
 	// Note, mPrpBytes is the same as prpBytes by default endorsement plugin, but others could change it.
 	// serialize the signing identity
 	// sign the concatenation of the proposal response and the serialized endorser identity with this endorser's key
 	creator, err := signer.Serialize()
 	if err != nil {
 		return nil, errors.Wrapf(err, "could not get the signer's identity")
+	}
+
+	prpBytes, err := protoutil.GetBytesProposalResponsePayload(
+		signedProposal.ProposalHash(),
+		response,
+		pubSimResBytes,
+		nil,
+		&pb.ChaincodeID{
+			Name:    signedProposal.ChaincodeName(),
+			Version: version,
+		},
+	)
+	logger.Debugf("ProposalResponse [%s][%s]->\n[%s]\n[%s] \n",
+		base64.StdEncoding.EncodeToString(signedProposal.ProposalHash()),
+		base64.StdEncoding.EncodeToString(pubSimResBytes),
+		base64.StdEncoding.EncodeToString(prpBytes),
+		base64.StdEncoding.EncodeToString(creator),
+	)
+	if err != nil {
+		return nil, errors.WithMessage(err, "failed to create the proposal response")
 	}
 
 	signature, err := signer.Sign(append(prpBytes, creator...))
@@ -680,4 +726,62 @@ func (s *signerWrapper) Sign(message []byte) ([]byte, error) {
 
 func (s *signerWrapper) Serialize() ([]byte, error) {
 	return s.creator, nil
+}
+
+type processedTransaction struct {
+	vc  int32
+	ue  *UnpackedEnvelope
+	env []byte
+}
+
+func NewProcessedTransactionFromEnvelopePayload(payload []byte) (*processedTransaction, int32, error) {
+	ue, headerType, err := UnpackEnvelopePayload(payload)
+	if err != nil {
+		return nil, headerType, err
+	}
+	return &processedTransaction{ue: ue}, headerType, nil
+}
+
+func NewProcessedTransactionFromEnvelopeRaw(env []byte) (*processedTransaction, error) {
+	ue, _, err := UnpackEnvelopeFromBytes(env)
+	if err != nil {
+		return nil, err
+	}
+	return &processedTransaction{ue: ue, env: env}, nil
+}
+
+func NewProcessedTransaction(raw []byte) (*processedTransaction, error) {
+	pt := &pb.ProcessedTransaction{}
+	if err := proto.Unmarshal(raw, pt); err != nil {
+		return nil, errors.Wrap(err, "unmarshal failed")
+	}
+	ue, _, err := UnpackEnvelope(pt.TransactionEnvelope)
+	if err != nil {
+		return nil, err
+	}
+	env, err := protoutil.Marshal(pt.TransactionEnvelope)
+	if err != nil {
+		return nil, err
+	}
+	return &processedTransaction{vc: pt.ValidationCode, ue: ue, env: env}, nil
+}
+
+func (p *processedTransaction) TxID() string {
+	return p.ue.TxID
+}
+
+func (p *processedTransaction) Results() []byte {
+	return p.ue.Results
+}
+
+func (p *processedTransaction) IsValid() bool {
+	return p.vc == int32(pb.TxValidationCode_VALID)
+}
+
+func (p *processedTransaction) Envelope() []byte {
+	return p.env
+}
+
+func (p *processedTransaction) ValidationCode() int32 {
+	return p.vc
 }

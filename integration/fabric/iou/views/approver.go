@@ -7,7 +7,12 @@ SPDX-License-Identifier: Apache-2.0
 package views
 
 import (
+	"sync"
+	"time"
+
 	"github.com/hyperledger-labs/fabric-smart-client/integration/fabric/iou/states"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/services/state"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/assert"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
@@ -70,6 +75,40 @@ func (i *ApproverView) Call(context view.Context) (interface{}, error) {
 	_, err = context.RunView(state.NewEndorseView(tx))
 	assert.NoError(err)
 
+	// Check committer events
+	var wg sync.WaitGroup
+	wg.Add(1)
+	_, ch, err := fabric.GetDefaultChannel(context)
+	assert.NoError(err)
+	committer := ch.Committer()
+	assert.NoError(err, committer.AddFinalityListener(tx.ID(), NewFinalityListener(tx.ID(), driver.Valid, &wg)), "failed to add committer listener")
+	assert.Error(committer.AddFinalityListener("", NewFinalityListener(tx.ID(), driver.Valid, &wg)), "must have failed")
+
 	// Finally, the approver waits that the transaction completes its lifecycle
-	return context.RunView(state.NewFinalityView(tx))
+	_, err = context.RunView(state.NewFinalityWithTimeoutView(tx, 1*time.Minute))
+	assert.NoError(err, "failed to run finality view")
+	wg.Wait()
+
+	wg = sync.WaitGroup{}
+	wg.Add(1)
+	assert.NoError(err, committer.AddFinalityListener(tx.ID(), NewFinalityListener(tx.ID(), driver.Valid, &wg)), "failed to add committer listener")
+	wg.Wait()
+
+	return nil, nil
+}
+
+type ApproverInitView struct{}
+
+func (a *ApproverInitView) Call(context view.Context) (interface{}, error) {
+	_, ch, err := fabric.GetDefaultChannel(context)
+	assert.NoError(err)
+	assert.NoError(ch.Committer().ProcessNamespace("iou"), "failed to setup namespace to process")
+	return nil, nil
+}
+
+type ApproverInitViewFactory struct{}
+
+func (c *ApproverInitViewFactory) NewView(in []byte) (view.View, error) {
+	f := &ApproverInitView{}
+	return f, nil
 }

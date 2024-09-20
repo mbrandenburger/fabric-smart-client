@@ -16,7 +16,9 @@ package main
 
 import (
 	fscnode "github.com/hyperledger-labs/fabric-smart-client/node"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/sdk"
+{{- if InstallPostgres }}
+	_ "github.com/lib/pq"
+{{ end }}
 
 	{{ if InstallView }}viewregistry "github.com/hyperledger-labs/fabric-smart-client/platform/view"{{ end }}
 	{{- range .Imports }}
@@ -24,8 +26,7 @@ import (
 )
 
 func main() {
-	n := fscnode.New()
-	n.InstallSDK(fabric.NewSDK(n))
+	n := fscnode.NewEmpty("")
 	{{- range .SDKs }}
 	n.InstallSDK({{ .Type }})
 	{{ end }}

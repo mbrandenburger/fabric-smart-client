@@ -7,10 +7,17 @@ SPDX-License-Identifier: Apache-2.0
 package docker
 
 import (
+	"bufio"
+	"context"
+	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 	docker "github.com/fsouza/go-dockerclient"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
 	"github.com/pkg/errors"
@@ -36,7 +43,7 @@ func GetInstance() (*Docker, error) {
 			instanceError = errors.Wrapf(err, "failed to create new docker client instance")
 		}
 
-		singleInstance = &Docker{dockerClient}
+		singleInstance = &Docker{Client: dockerClient}
 	})
 
 	return singleInstance, instanceError
@@ -68,8 +75,10 @@ func (d *Docker) CreateNetwork(networkID string) error {
 			Driver: "bridge",
 		},
 	)
-
-	return errors.Wrapf(err, "failed creating new docker network with ID='%s'", networkID)
+	if err != nil {
+		return errors.Wrapf(err, "failed creating new docker network with ID='%s'", networkID)
+	}
+	return nil
 }
 
 // Cleanup is a helper function to release all container associated with `networkID`, returns an error in case of a failure.
@@ -106,7 +115,7 @@ func (d *Docker) Cleanup(networkID string, matchName func(name string) bool) err
 	}
 
 	for _, i := range volumes {
-		if strings.HasPrefix(i.Name, networkID) {
+		if matchName(i.Name) {
 			logger.Infof("cleanup volume [%s]", i.Name)
 			err := d.Client.RemoveVolumeWithOptions(docker.RemoveVolumeOptions{
 				Name:  i.Name,
@@ -125,7 +134,7 @@ func (d *Docker) Cleanup(networkID string, matchName func(name string) bool) err
 	}
 	for _, i := range images {
 		for _, tag := range i.RepoTags {
-			if strings.HasPrefix(tag, networkID) {
+			if matchName(tag) {
 				logger.Infof("cleanup image [%s]", tag)
 				if err := d.Client.RemoveImage(i.ID); err != nil {
 					return errors.Wrapf(err, "failed removing docker image='%s'", i.ID)
@@ -193,4 +202,46 @@ func (d *Docker) LocalIP(networkID string) (string, error) {
 	}
 
 	return "127.0.0.1", nil
+}
+
+func PortSet(ports ...int) nat.PortSet {
+	m := make(nat.PortSet, len(ports))
+	for _, port := range ports {
+		m[nat.Port(fmt.Sprintf("%d/tcp", port))] = struct{}{}
+	}
+	return m
+}
+
+func PortBindings(ports ...int) nat.PortMap {
+	m := make(nat.PortMap, len(ports))
+	for _, p := range ports {
+		port := strconv.Itoa(p)
+		m[nat.Port(port+"/tcp")] = []nat.PortBinding{{
+			HostIP:   "0.0.0.0",
+			HostPort: port,
+		}}
+	}
+	return m
+}
+
+func StartLogs(cli *client.Client, containerID string, loggerName string) error {
+	dockerLogger := flogging.MustGetLogger(loggerName)
+	reader, err := cli.ContainerLogs(context.Background(), containerID, container.LogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Follow:     true,
+		Timestamps: false,
+	})
+	if err != nil {
+		return err
+	}
+
+	go func() {
+		defer reader.Close()
+		scanner := bufio.NewScanner(reader)
+		for scanner.Scan() {
+			dockerLogger.Debugf("%s", scanner.Text())
+		}
+	}()
+	return nil
 }

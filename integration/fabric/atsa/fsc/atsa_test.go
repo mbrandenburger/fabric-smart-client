@@ -7,74 +7,105 @@ SPDX-License-Identifier: Apache-2.0
 package fsc_test
 
 import (
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-
 	"github.com/hyperledger-labs/fabric-smart-client/integration"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/fabric/atsa/fsc"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/fabric/atsa/fsc/client"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/fabric/atsa/fsc/states"
+	fsc2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/sql/postgres"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("EndToEnd", func() {
-	var (
-		ii *integration.Infrastructure
-	)
+type node = [2]string
 
-	AfterEach(func() {
-		// Stop the ii
-		ii.Stop()
+var _ = Describe("EndToEnd", func() {
+	Describe("Asset Transfer Secured Agreement (With Approvers) with LibP2P", func() {
+		s := NewTestSuite(fsc2.LibP2P, integration.NoReplication)
+		BeforeEach(s.Setup)
+		AfterEach(s.TearDown)
+		It("succeeded", s.TestSucceeded)
 	})
 
-	Describe("Asset Transfer Secured Agreement (With Approvers)", func() {
-		var (
-			issuer *client.Client
-			alice  *client.Client
-			bob    *client.Client
-		)
+	Describe("Asset Transfer Secured Agreement (With Approvers) with Websockets", func() {
+		s := NewTestSuite(fsc2.WebSocket, integration.NoReplication)
+		BeforeEach(s.Setup)
+		AfterEach(s.TearDown)
+		It("succeeded", s.TestSucceeded)
+	})
 
-		BeforeEach(func() {
-			var err error
-			// Create the integration ii
-			ii, err = integration.Generate(StartPort(), true, fsc.Topology()...)
-			Expect(err).NotTo(HaveOccurred())
-			// Start the integration ii
-			ii.Start()
+	Describe("Asset Transfer Secured Agreement (With Approvers) with Websockets with replicas", func() {
+		s := NewTestSuite(
+			fsc2.WebSocket,
+			&integration.ReplicationOptions{
+				ReplicationFactors: map[string]int{
+					"issuer":    2,
+					"alice":     3,
+					"bob":       2,
+					"approvers": 2,
+				},
+				SQLConfigs: map[string]*postgres.ContainerConfig{
+					"alice": postgres.DefaultConfig("alice-db"),
+					"bob":   postgres.DefaultConfig("bob-db"),
+				},
+			})
 
-			approver := ii.Identity("approver")
-
-			issuer = client.New(ii.Client("issuer"), ii.Identity("issuer"), approver)
-			alice = client.New(ii.Client("alice"), ii.Identity("alice"), approver)
-			bob = client.New(ii.Client("bob"), ii.Identity("bob"), approver)
+		BeforeEach(s.Setup)
+		AfterEach(s.TearDown)
+		It("succeeded 1", func() {
+			s.TestSucceededWithUsers(node{"issuer", "fsc.issuer.0"}, node{"alice", "fsc.alice.0"}, node{"bob", "fsc.bob.0"}, node{"alice", "fsc.alice.1"})
 		})
-
-		It("succeeded", func() {
-			txID, err := issuer.Issue(&states.Asset{
-				ObjectType:        "coin",
-				ID:                "1234",
-				Owner:             ii.Identity("alice"),
-				PublicDescription: "Coin",
-				PrivateProperties: []byte("Hello World!!!"),
-			})
-			Expect(err).ToNot(HaveOccurred())
-			Expect(alice.IsTxFinal(txID)).NotTo(HaveOccurred())
-
-			agreementID, err := alice.AgreeToSell(&states.AgreementToSell{
-				TradeID: "1234",
-				ID:      "1234",
-				Price:   100,
-			})
-			Expect(err).ToNot(HaveOccurred())
-
-			_, err = bob.AgreeToBuy(&states.AgreementToBuy{
-				TradeID: "1234",
-				ID:      "1234",
-				Price:   100,
-			})
-			Expect(err).ToNot(HaveOccurred())
-
-			err = alice.Transfer("1234", agreementID, ii.Identity("bob"))
-			Expect(err).ToNot(HaveOccurred())
+		It("succeeded 2", func() {
+			s.TestSucceededWithUsers(node{"issuer", "fsc.issuer.1"}, node{"alice", "fsc.alice.1"}, node{"bob", "fsc.bob.1"}, node{"alice", "fsc.alice.1"})
 		})
 	})
 })
+
+type TestSuite struct {
+	*integration.TestSuite
+}
+
+func NewTestSuite(commType fsc2.P2PCommunicationType, nodeOpts *integration.ReplicationOptions) *TestSuite {
+	return &TestSuite{integration.NewTestSuiteWithSQL(nodeOpts.SQLConfigs, func() (*integration.Infrastructure, error) {
+		return integration.Generate(StartPort(), true, integration.ReplaceTemplate(fsc.Topology(&fsc.SDK{}, commType, nodeOpts))...)
+	})}
+}
+
+func (s *TestSuite) TestSucceeded() {
+	s.TestSucceededWithUsers(node{"issuer", "issuer"}, node{"alice", "alice"}, node{"bob", "bob"}, node{"alice", "alice"})
+}
+
+func (s *TestSuite) TestSucceededWithUsers(issuerId node, sellerId node, buyerId node, transferringUserId node) {
+	approver := s.II.Identity("approver")
+
+	issuer := client.New(s.II.Client(issuerId[1]), s.II.Identity(issuerId[0]), approver)
+	txID, err := issuer.Issue(&states.Asset{
+		ObjectType:        "coin",
+		ID:                "1234",
+		Owner:             s.II.Identity(sellerId[0]),
+		PublicDescription: "Coin",
+		PrivateProperties: []byte("Hello World!!!"),
+	})
+	Expect(err).ToNot(HaveOccurred())
+
+	seller := client.New(s.II.Client(sellerId[1]), s.II.Identity(sellerId[0]), approver)
+	Expect(seller.IsTxFinal(txID)).NotTo(HaveOccurred())
+	agreementID, err := seller.AgreeToSell(&states.AgreementToSell{
+		TradeID: "1234",
+		ID:      "1234",
+		Price:   100,
+	})
+	Expect(err).ToNot(HaveOccurred())
+
+	buyer := client.New(s.II.Client(buyerId[1]), s.II.Identity(buyerId[0]), approver)
+	_, err = buyer.AgreeToBuy(&states.AgreementToBuy{
+		TradeID: "1234",
+		ID:      "1234",
+		Price:   100,
+	})
+	Expect(err).ToNot(HaveOccurred())
+
+	transferringUser := client.New(s.II.Client(transferringUserId[1]), s.II.Identity(transferringUserId[0]), approver)
+	err = transferringUser.Transfer("1234", agreementID, s.II.Identity(buyerId[0]))
+	Expect(err).ToNot(HaveOccurred())
+}

@@ -11,14 +11,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/client"
@@ -269,12 +267,12 @@ func (n *Extension) runDockerContainers(chaincode *topology.ChannelChaincode, pa
 			nil, nil, containerName,
 		)
 		Expect(err).ToNot(HaveOccurred())
-		Expect(cli.ContainerStart(ctx, resp.ID, types.ContainerStartOptions{})).ToNot(HaveOccurred())
+		Expect(cli.ContainerStart(ctx, resp.ID, container.StartOptions{})).ToNot(HaveOccurred())
 		time.Sleep(3 * time.Second)
 
 		dockerLogger := flogging.MustGetLogger("fpc.container." + containerName)
 		go func() {
-			reader, err := cli.ContainerLogs(context.Background(), resp.ID, types.ContainerLogsOptions{
+			reader, err := cli.ContainerLogs(context.Background(), resp.ID, container.LogsOptions{
 				ShowStdout: true,
 				ShowStderr: true,
 				Follow:     true,
@@ -300,7 +298,7 @@ func validateSGXMode(mode string) error {
 	if strings.ToUpper(mode) == SGX_MODE_HW || strings.ToUpper(mode) == SGX_MODE_SIM {
 		return nil
 	}
-	return fmt.Errorf("invalid SGX Mode = %s", mode)
+	return errors.Errorf("invalid SGX Mode = %s", mode)
 }
 
 func validateSGXDevicesPaths(paths []string) error {
@@ -437,7 +435,7 @@ func (n *Extension) prepareExternalBuilderScripts() string {
 		{"release", externalbuilders.Release},
 	} {
 		scriptPath := filepath.Join(path, "bin", script.name)
-		Expect(ioutil.WriteFile(scriptPath, []byte(script.content), 0777)).NotTo(HaveOccurred())
+		Expect(os.WriteFile(scriptPath, []byte(script.content), 0777)).NotTo(HaveOccurred())
 	}
 
 	return path

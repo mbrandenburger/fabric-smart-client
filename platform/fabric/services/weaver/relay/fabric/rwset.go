@@ -13,6 +13,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/keys"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/hash"
 	"github.com/hyperledger/fabric-protos-go/ledger/rwset"
 	"github.com/hyperledger/fabric/core/ledger/kvledger/txmgmt/rwsetutil"
 	"github.com/pkg/errors"
@@ -83,7 +84,7 @@ func (r metaWrites) Equals(o metaWrites) error {
 			return errors.Errorf("read not found [%s]", k)
 		}
 		if !bytes.Equal(v, v2) {
-			return errors.Errorf("writes for [%s] do not match [%v]!=[%v]", k, v, v2)
+			return errors.Errorf("writes for [%s] do not match [%v]!=[%v]", k, hash.Hashable(v), hash.Hashable(v2))
 		}
 	}
 
@@ -129,10 +130,6 @@ func (w *metaWriteSet) add(ns, key string, meta map[string][]byte) error {
 		return err
 	}
 
-	if err := keys.ValidateKey(key); err != nil {
-		return err
-	}
-
 	nsMap, in := w.metawrites[ns]
 	if !in {
 		nsMap = keyedMetaWrites{}
@@ -155,9 +152,17 @@ func (w *metaWriteSet) get(ns, key string) map[string][]byte {
 
 type namespaceWrites map[string][]byte
 
+func (r namespaceWrites) Keys() []string {
+	var keys []string
+	for k := range r {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 func (r namespaceWrites) Equals(o namespaceWrites) error {
 	if len(r) != len(o) {
-		return errors.Errorf("number of writes do not match [%v]!=[%v]", len(r), len(o))
+		return errors.Errorf("number of writes do not match [%d]!=[%d], [%v]!=[%v]", len(r), len(o), r.Keys(), o.Keys())
 	}
 
 	for k, v := range r {
@@ -166,7 +171,7 @@ func (r namespaceWrites) Equals(o namespaceWrites) error {
 			return errors.Errorf("read not found [%s]", k)
 		}
 		if !bytes.Equal(v, v2) {
-			return errors.Errorf("writes for [%s] do not match [%v]!=[%v]", k, v, v2)
+			return errors.Errorf("writes for [%s] do not match [%v]!=[%v]", k, hash.Hashable(v), hash.Hashable(v2))
 		}
 	}
 
@@ -182,10 +187,6 @@ type writeSet struct {
 
 func (w *writeSet) add(ns, key string, value []byte) error {
 	if err := keys.ValidateNs(ns); err != nil {
-		return err
-	}
-
-	if err := keys.ValidateKey(key); err != nil {
 		return err
 	}
 

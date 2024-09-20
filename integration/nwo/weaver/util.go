@@ -13,11 +13,12 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -29,13 +30,13 @@ func packageChaincode() (tmpDir string, cleanup func(), err error) {
 	_ = metadataContent
 	resp, err := http.Get(interopCCPath)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed downloading file %s: %v", interopCCPath, err)
+		return "", nil, errors.Errorf("failed downloading file %s: %v", interopCCPath, err)
 	}
 	defer resp.Body.Close()
 
-	tmpDir, err = ioutil.TempDir("", "interopCC")
+	tmpDir, err = os.MkdirTemp("", "interopCC")
 	if err != nil {
-		return "", nil, fmt.Errorf("failed creating temp directory: %v", err)
+		return "", nil, errors.Errorf("failed creating temp directory: %v", err)
 	}
 
 	archivePath := filepath.Join(tmpDir, "interopCC.zip")
@@ -46,12 +47,12 @@ func packageChaincode() (tmpDir string, cleanup func(), err error) {
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed downloading data from %s: %v", interopCCPath, err)
+		return "", nil, errors.Errorf("failed downloading data from %s: %v", interopCCPath, err)
 	}
 
 	archive, err := zip.OpenReader(archivePath)
 	if err != nil {
-		return "", nil, fmt.Errorf("failed opening zip archive %s: %v", archivePath, err)
+		return "", nil, errors.Errorf("failed opening zip archive %s: %v", archivePath, err)
 	}
 	defer archive.Close()
 
@@ -71,7 +72,7 @@ func packageChaincode() (tmpDir string, cleanup func(), err error) {
 		relPath = filepath.Join(tmpDir, "src", relPath)
 
 		if strings.Contains(relPath, "..") {
-			return "", nil, fmt.Errorf("illegal path (contains '..')")
+			return "", nil, errors.Errorf("illegal path (contains '..')")
 		}
 
 		fi := entry.FileInfo()
@@ -89,12 +90,12 @@ func packageChaincode() (tmpDir string, cleanup func(), err error) {
 			return "", nil, fmt.Errorf("invalid archive entry %s: %v", entry.Name, err)
 		}
 
-		bytes, err := ioutil.ReadAll(f)
+		bytes, err := io.ReadAll(f)
 		if err != nil {
 			return "", nil, fmt.Errorf("failed reading %s: %v", entry.Name, err)
 		}
 
-		err = ioutil.WriteFile(relPath, bytes, 0o644)
+		err = os.WriteFile(relPath, bytes, 0o644)
 		if err != nil {
 			return "", nil, fmt.Errorf("failed writing to %s: %v", relPath, err)
 		}
@@ -109,7 +110,7 @@ func packageChaincode() (tmpDir string, cleanup func(), err error) {
 		return tmpDir, func() {}, err
 	}
 
-	err = ioutil.WriteFile(metadataPath, []byte(metadataContent), 0o644)
+	err = os.WriteFile(metadataPath, []byte(metadataContent), 0o644)
 	if err != nil {
 		return
 	}

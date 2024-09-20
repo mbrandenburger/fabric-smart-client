@@ -7,11 +7,13 @@ SPDX-License-Identifier: Apache-2.0
 package comm
 
 import (
+	"context"
+	"runtime/debug"
 	"sync"
 
-	"go.uber.org/zap/zapcore"
-
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm/host"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
+	"go.uber.org/zap/zapcore"
 )
 
 // NetworkStreamSession implements view.Session
@@ -45,12 +47,20 @@ func (n *NetworkStreamSession) Info() view.SessionInfo {
 
 // Send sends the payload to the endpoint
 func (n *NetworkStreamSession) Send(payload []byte) error {
-	return n.sendWithStatus(payload, view.OK)
+	return n.SendWithContext(context.TODO(), payload)
+}
+
+func (n *NetworkStreamSession) SendWithContext(ctx context.Context, payload []byte) error {
+	return n.sendWithStatus(ctx, payload, view.OK)
 }
 
 // SendError sends an error to the endpoint with the passed payload
 func (n *NetworkStreamSession) SendError(payload []byte) error {
-	return n.sendWithStatus(payload, view.ERROR)
+	return n.SendErrorWithContext(context.TODO(), payload)
+}
+
+func (n *NetworkStreamSession) SendErrorWithContext(ctx context.Context, payload []byte) error {
+	return n.sendWithStatus(ctx, payload, view.ERROR)
 }
 
 // Receive returns a channel of messages received from the endpoint
@@ -60,37 +70,54 @@ func (n *NetworkStreamSession) Receive() <-chan *view.Message {
 
 // Close releases all the resources allocated by this session
 func (n *NetworkStreamSession) Close() {
-	defer logger.Debugf("Closing session [%s]", n.sessionID)
 	n.node.sessionsMutex.Lock()
+	defer n.node.sessionsMutex.Unlock()
+
+	n.closeInternal()
+}
+
+func (n *NetworkStreamSession) closeInternal() {
+	if n.closed {
+		return
+	}
+
+	logger.Debugf("closing session [%s] with [%d] streams", n.sessionID, len(n.streams))
 	toClose := make([]*streamHandler, 0, len(n.streams))
 	for stream := range n.streams {
+		logger.Debugf("session [%s], stream [%s], refCtr [%d]", n.sessionID, stream.stream.Hash(), stream.refCtr)
 		stream.refCtr--
 		if stream.refCtr == 0 {
 			toClose = append(toClose, stream)
 		}
 	}
-	n.node.sessionsMutex.Unlock()
 
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
-		logger.Debugf("Closing session stream [%s]", n.sessionID)
+		logger.Debugf("closing session [%s]'s streams [%d]", n.sessionID, len(toClose))
 	}
 	for _, stream := range toClose {
-		stream.close()
+		stream.close(context.TODO())
 	}
 
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
-		logger.Debugf("Closing session incoming [%s]", n.sessionID)
+		logger.Debugf("closing session [%s]'s streams [%d] done", n.sessionID, len(toClose))
 	}
 	close(n.incoming)
 	n.closed = true
+	n.streams = make(map[*streamHandler]struct{})
 
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
-		logger.Debugf("Closing session [%s] done", n.sessionID)
+		logger.Debugf("closing session [%s] done", n.sessionID)
 	}
 }
 
-func (n *NetworkStreamSession) sendWithStatus(payload []byte, status int32) error {
-	err := n.node.sendTo(string(n.endpointID), &ViewPacket{
+func (n *NetworkStreamSession) sendWithStatus(ctx context.Context, payload []byte, status int32) error {
+	info := host.StreamInfo{
+		RemotePeerID:      string(n.endpointID),
+		RemotePeerAddress: n.endpointAddress,
+		ContextID:         n.contextID,
+		SessionID:         n.sessionID,
+	}
+	err := n.node.sendTo(ctx, info, &ViewPacket{
 		ContextID: n.contextID,
 		SessionID: n.sessionID,
 		Caller:    n.callerViewID,
@@ -98,7 +125,25 @@ func (n *NetworkStreamSession) sendWithStatus(payload []byte, status int32) erro
 		Payload:   payload,
 	})
 	if logger.IsEnabledFor(zapcore.DebugLevel) {
-		logger.Debugf("sent message [len:%d] to [%s] with err [%s]", len(payload), string(n.endpointID), err)
+		logger.Debugf(
+			"sent message [len:%d] to [%s:%s] from [%s] with err [%s]",
+			len(payload),
+			string(n.endpointID),
+			n.endpointAddress,
+			n.callerViewID,
+			err,
+		)
+		if len(n.callerViewID) == 0 {
+			logger.Debugf(
+				"sent message [len:%d] to [%s:%s] from [%s] with err [%s][%s]",
+				len(payload),
+				string(n.endpointID),
+				n.endpointAddress,
+				n.callerViewID,
+				err,
+				debug.Stack(),
+			)
+		}
 	}
 	return err
 }

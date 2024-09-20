@@ -10,7 +10,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 	"os"
 	"os/exec"
@@ -23,8 +22,22 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/hyperledger/fabric/cmd/common/comm"
-	"github.com/hyperledger/fabric/cmd/common/signer"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/client"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
+	runner2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/commands"
+	node2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring/optl"
+	driver2 "github.com/hyperledger-labs/fabric-smart-client/platform/common/driver"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils"
+	tracing2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/sdk/tracing"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view"
+	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view/cmd"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/web"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/crypto"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/db/driver/sql"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
 	"github.com/miracl/conflate"
 	"github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -32,17 +45,6 @@ import (
 	"github.com/spf13/viper"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/grouper"
-
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common"
-	runner2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/commands"
-	node2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
-	commands2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/tracing/commands"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view"
-	view2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/client/view/cmd"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/crypto"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
 )
 
 func init() {
@@ -64,6 +66,13 @@ const (
 	WebPort    api.PortName = "Web"    // Port at which the Web Server respond
 )
 
+func WithReplicationFactor(factor int) node2.Option {
+	return func(o *node2.Options) error {
+		o.Put("Replication", factor)
+		return nil
+	}
+}
+
 func WithAlias(alias string) node2.Option {
 	return func(o *node2.Options) error {
 		o.AddAlias(alias)
@@ -79,8 +88,9 @@ type Platform struct {
 	EventuallyTimeout time.Duration
 
 	Organizations            []*node2.Organization
-	Peers                    []*node2.Peer
+	Peers                    []*node2.Replica
 	Resolvers                []*Resolver
+	Routing                  map[string][]string
 	colorIndex               int
 	metricsAggregatorProcess ifrit.Process
 }
@@ -124,38 +134,24 @@ func (p *Platform) GenerateArtifacts() {
 	// Generate core.yaml for all fsc nodes by including all the additional configurations coming
 	// from other platforms
 	for _, peer := range p.Peers {
-		cc := &grpc.ConnectionConfig{
-			Address:           p.PeerAddress(peer, ListenPort),
-			TLSEnabled:        true,
-			TLSRootCertFile:   path.Join(p.NodeLocalTLSDir(peer), "ca.crt"),
-			ConnectionTimeout: 10 * time.Minute,
-		}
-		p.Context.SetConnectionConfig(peer.Name, cc)
-
-		clientID, err := p.GetSigningIdentity(peer)
-		Expect(err).ToNot(HaveOccurred())
-		p.Context.SetClientSigningIdentity(peer.Name, clientID)
-
-		adminID, err := p.GetAdminSigningIdentity(peer)
-		Expect(err).ToNot(HaveOccurred())
-		p.Context.SetAdminSigningIdentity(peer.Name, adminID)
-
-		cert, err := ioutil.ReadFile(p.LocalMSPIdentityCert(peer))
-		Expect(err).ToNot(HaveOccurred())
-		p.Context.SetViewIdentity(peer.Name, cert)
+		address := p.PeerAddress(peer, ListenPort)
+		p.setIdentities(address, peer)
 
 		p.GenerateCoreConfig(peer)
+		if p.P2PCommunicationType() == WebSocket {
+			p.GenerateRoutingConfig()
+		}
 
 		c := view2.Config{
 			Version: 0,
 			Address: p.PeerAddress(peer, ListenPort),
-			TLSConfig: comm.Config{
-				PeerCACertPath: path.Join(p.NodeLocalTLSDir(peer), "ca.crt"),
+			TLSConfig: view2.TLSConfig{
+				PeerCACertPath: path.Join(p.NodeLocalTLSDir(peer.Peer), "ca.crt"),
 				Timeout:        10 * time.Minute,
 			},
-			SignerConfig: signer.Config{
-				IdentityPath: p.LocalMSPIdentityCert(peer),
-				KeyPath:      p.LocalMSPPrivateKey(peer),
+			SignerConfig: view2.SignerConfig{
+				IdentityPath: p.LocalMSPIdentityCert(peer.Peer),
+				KeyPath:      p.LocalMSPPrivateKey(peer.Peer),
 			},
 		}
 		Expect(c.ToFile(p.NodeClientConfigPath(peer))).ToNot(HaveOccurred())
@@ -169,113 +165,133 @@ func (p *Platform) GenerateArtifacts() {
 	}
 }
 
+func (p *Platform) setIdentities(address string, peer *node2.Replica) {
+	cc := &grpc.ConnectionConfig{
+		Address:           address,
+		TLSEnabled:        true,
+		TLSRootCertFile:   path.Join(p.NodeLocalTLSDir(peer.Peer), "ca.crt"),
+		ConnectionTimeout: 10 * time.Minute,
+	}
+	p.Context.SetConnectionConfig(peer.UniqueName, cc)
+
+	clientID, err := p.GetSigningIdentity(peer.Peer)
+	Expect(err).ToNot(HaveOccurred())
+	p.Context.SetClientSigningIdentity(peer.Name, clientID)
+
+	adminID, err := p.GetAdminSigningIdentity(peer.Peer)
+	Expect(err).ToNot(HaveOccurred())
+	p.Context.SetAdminSigningIdentity(peer.Name, adminID)
+
+	cert, err := os.ReadFile(p.LocalMSPIdentityCert(peer.Peer))
+	Expect(err).ToNot(HaveOccurred())
+	p.Context.SetViewIdentity(peer.Name, cert)
+}
+
 func (p *Platform) Load() {
 }
 
-func (p *Platform) Members() []grouper.Member {
+func (p *Platform) members(bootstrap bool) []grouper.Member {
 	members := grouper.Members{}
 	for _, node := range p.Peers {
-		if node.Bootstrap {
+		if node.Bootstrap == bootstrap {
 			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
 		}
-	}
-	for _, node := range p.Peers {
-		if !node.Bootstrap {
-			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
-		}
-	}
-	if len(p.Topology.TraceAggregator) != 0 {
-		members = append(members, grouper.Member{Name: "tracing-aggregator", Runner: p.MetricsAggregator()})
 	}
 	return members
 }
 
+func (p *Platform) Members() []grouper.Member {
+	return append(p.members(true), p.members(false)...)
+}
+
 func (p *Platform) PostRun(bool) {
 	for _, peer := range p.Peers {
-		v := viper.New()
-		v.SetConfigFile(p.NodeConfigPath(peer))
-		err := v.ReadInConfig() // Find and read the config file
-		Expect(err).NotTo(HaveOccurred())
+		v := p.viper(peer)
 
-		cc := &grpc.ConnectionConfig{
-			Address:           v.GetString("fsc.address"),
-			TLSEnabled:        true,
-			TLSRootCertFile:   path.Join(p.NodeLocalTLSDir(peer), "ca.crt"),
-			ConnectionTimeout: 10 * time.Minute,
-		}
-		p.Context.SetConnectionConfig(peer.Name, cc)
-
-		clientID, err := p.GetSigningIdentity(peer)
-		Expect(err).ToNot(HaveOccurred())
-		p.Context.SetClientSigningIdentity(peer.Name, clientID)
-
-		adminID, err := p.GetAdminSigningIdentity(peer)
-		Expect(err).ToNot(HaveOccurred())
-		p.Context.SetAdminSigningIdentity(peer.Name, adminID)
-
-		cert, err := ioutil.ReadFile(p.LocalMSPIdentityCert(peer))
-		Expect(err).ToNot(HaveOccurred())
-		p.Context.SetViewIdentity(peer.Name, cert)
+		address := v.GetString("fsc.grpc.address")
+		p.setIdentities(address, peer)
+	}
+	tracerProvider, err := tracing2.NewTracerProviderFromConfig(tracing2.Config{
+		Provider: p.Topology.Monitoring.TracingType,
+		File: tracing2.FileConfig{
+			Path: "./client-trace.out",
+		},
+		Otpl: tracing2.OtplConfig{
+			Address: fmt.Sprintf("0.0.0.0:%d", optl.JaegerCollectorPort),
+		},
+	})
+	if err != nil {
+		panic(err)
 	}
 
 	for _, node := range p.Peers {
-		v := viper.New()
-		v.SetConfigFile(p.NodeConfigPath(node))
-		err := v.ReadInConfig() // Find and read the config file
-		Expect(err).NotTo(HaveOccurred())
+		v := p.viper(node)
 
-		// Get from the registry the signing identity and the connection config
-		c, err := view.NewClient(
+		// Prepare GRPC Client, Web Client, and CLI
+
+		// GRPC client
+		grpcClient, err := view.NewClient(
 			&view.Config{
 				ID:               v.GetString("fsc.id"),
-				ConnectionConfig: p.Context.ConnectionConfig(node.Name),
+				ConnectionConfig: p.Context.ConnectionConfig(node.UniqueName),
 			},
 			p.Context.ClientSigningIdentity(node.Name),
 			crypto.NewProvider(),
+			tracerProvider,
 		)
 		Expect(err).NotTo(HaveOccurred())
+		p.Context.SetViewClient(node.Name, grpcClient)
+		p.Context.SetViewClient(node.ID(), grpcClient)
+		for _, identity := range p.Context.GetViewIdentityAliases(node.ID()) {
+			p.Context.SetViewClient(identity, grpcClient)
+		}
+		for _, identity := range p.Context.GetViewIdentityAliases(node.Name) {
+			p.Context.SetViewClient(identity, grpcClient)
+		}
+		for _, alias := range node.Aliases {
+			p.Context.SetViewClient(alias, grpcClient)
+		}
 
+		// Web Client
+		webClientConfig, err := client.NewWebClientConfigFromFSC(p.NodeDir(node))
+		Expect(err).NotTo(HaveOccurred())
+		webClient, err := web.NewClient(webClientConfig)
+		Expect(err).NotTo(HaveOccurred())
+		p.Context.SetWebClient(node.Name, webClient)
+		p.Context.SetWebClient(node.ID(), webClient)
+		for _, identity := range p.Context.GetViewIdentityAliases(node.ID()) {
+			p.Context.SetWebClient(identity, webClient)
+		}
+		for _, identity := range p.Context.GetViewIdentityAliases(node.Name) {
+			p.Context.SetWebClient(identity, webClient)
+		}
+		for _, alias := range node.Aliases {
+			p.Context.SetWebClient(alias, webClient)
+		}
+
+		// CLI
 		cli := &fscCLIViewClient{
 			timeout: p.EventuallyTimeout,
 			p:       p,
 			CMD: commands.View{
-				TLSCA:         path.Join(p.NodeLocalTLSDir(node), "ca.crt"),
-				UserCert:      p.LocalMSPIdentityCert(node),
-				UserKey:       p.LocalMSPPrivateKey(node),
+				TLSCA:         path.Join(p.NodeLocalTLSDir(node.Peer), "ca.crt"),
+				UserCert:      p.LocalMSPIdentityCert(node.Peer),
+				UserKey:       p.LocalMSPPrivateKey(node.Peer),
 				NetworkPrefix: p.NetworkID,
-				Server:        p.Context.ConnectionConfig(node.Name).Address,
+				Server:        p.Context.ConnectionConfig(node.UniqueName).Address,
 			},
 		}
 		p.Context.SetCLI(node.Name, cli)
 		p.Context.SetCLI(node.ID(), cli)
-		p.Context.SetViewClient(node.Name, c)
-		p.Context.SetViewClient(node.ID(), c)
-		for _, identity := range p.Context.GetViewIdentityAliases(node.ID()) {
-			p.Context.SetViewClient(identity, c)
-		}
-		for _, identity := range p.Context.GetViewIdentityAliases(node.Name) {
-			p.Context.SetViewClient(identity, c)
-		}
-		for _, alias := range node.Aliases {
-			p.Context.SetViewClient(alias, c)
-		}
-
-		// Setup admins
-		if id := p.Context.AdminSigningIdentity(node.Name); id != nil {
-			c, err := view.NewClient(
-				&view.Config{
-					ID:               v.GetString("fsc.id"),
-					ConnectionConfig: p.Context.ConnectionConfig(node.Name),
-				},
-				id,
-				crypto.NewProvider(),
-			)
-			Expect(err).NotTo(HaveOccurred())
-
-			p.Context.SetViewClient(node.Name+".admin", c)
-			p.Context.SetViewClient(node.ID()+".admin", c)
-		}
 	}
+}
+
+func (p *Platform) viper(peer *node2.Replica) *viper.Viper {
+	v := viper.New()
+	v.SetConfigFile(p.NodeConfigPath(peer))
+	err := v.ReadInConfig() // Find and read the config file
+	Expect(err).NotTo(HaveOccurred())
+	return v
 }
 
 func (p *Platform) Cleanup() {
@@ -305,32 +321,37 @@ func (p *Platform) CheckTopology() {
 	}
 
 	for _, node := range p.Topology.Nodes {
+		if p.Topology.P2PCommunicationType != WebSocket && node.Options.ReplicationFactor() > 1 {
+			panic("replication only supported for websocket p2p communication")
+		}
+		for _, uniqueName := range node.ReplicaUniqueNames() {
+			var extraIdentities []*node2.PeerIdentity
+			peer := node2.NewReplica(&node2.Peer{
+				Name:            node.Name,
+				Organization:    org.Name,
+				Bootstrap:       node.Bootstrap,
+				ExecutablePath:  node.ExecutablePath,
+				ExtraIdentities: extraIdentities,
+				Node:            node,
+				Aliases:         node.Options.Aliases(),
+			}, uniqueName)
+			peer.Admins = []string{
+				p.AdminLocalMSPIdentityCert(peer.Peer),
+			}
+			ports := api.Ports{}
+			for _, portName := range PeerPortNames() {
+				ports[portName] = p.Context.ReservePort()
+			}
+			p.Context.SetPortsByPeerID("fsc", peer.ID(), ports)
+			p.Context.SetHostByPeerID("fsc", peer.ID(), "127.0.0.1")
+			p.Peers = append(p.Peers, peer)
+			users[orgName] = users[orgName] + 1
+			userNames[orgName] = append(userNames[orgName], node.Name)
 
-		var extraIdentities []*node2.PeerIdentity
-		peer := &node2.Peer{
-			Name:            node.Name,
-			Organization:    org.Name,
-			Bootstrap:       node.Bootstrap,
-			ExecutablePath:  node.ExecutablePath,
-			ExtraIdentities: extraIdentities,
-			Node:            node,
-			Aliases:         node.Options.Aliases(),
-		}
-		peer.Admins = []string{
-			p.AdminLocalMSPIdentityCert(peer),
-		}
-		p.Peers = append(p.Peers, peer)
-		ports := api.Ports{}
-		for _, portName := range PeerPortNames() {
-			ports[portName] = p.Context.ReservePort()
-		}
-		p.Context.SetPortsByPeerID("fsc", peer.ID(), ports)
-		users[orgName] = users[orgName] + 1
-		userNames[orgName] = append(userNames[orgName], node.Name)
-
-		// Is this a bootstrap node/
-		if node.Bootstrap {
-			bootstrapNodeFound = true
+			// Is this a bootstrap node/
+			if node.Bootstrap {
+				bootstrapNodeFound = true
+			}
 		}
 	}
 
@@ -344,7 +365,7 @@ func (p *Platform) CheckTopology() {
 	}
 }
 
-func (p *Platform) OperationAddress(peer *node2.Peer) string {
+func (p *Platform) OperationAddress(peer *node2.Replica) string {
 	fabricHost := "fabric"
 	if runtime.GOOS == "darwin" {
 		fabricHost = "host.docker.internal"
@@ -394,6 +415,17 @@ func (p *Platform) CryptoConfigPath() string {
 	return filepath.Join(p.Context.RootDir(), "fsc", "crypto-config.yaml")
 }
 
+func (p *Platform) P2PCommunicationType() P2PCommunicationType {
+	if typ := p.Topology.P2PCommunicationType; len(typ) > 0 {
+		return typ
+	}
+	return LibP2P
+}
+
+func (p *Platform) RoutingConfigPath() string {
+	return filepath.Join(p.Context.RootDir(), "fsc", "routing-config.yaml")
+}
+
 func (p *Platform) GenerateCryptoConfig() {
 	Expect(os.MkdirAll(p.CryptoPath(), 0755)).NotTo(HaveOccurred())
 
@@ -401,13 +433,24 @@ func (p *Platform) GenerateCryptoConfig() {
 	Expect(err).NotTo(HaveOccurred())
 	defer crypto.Close()
 
-	t, err := template.New("crypto").Parse(node2.DefaultCryptoTemplate)
+	t, err := template.New("crypto").Parse(p.Topology.Templates.CryptoTemplate())
 	Expect(err).NotTo(HaveOccurred())
 
 	Expect(t.Execute(io.MultiWriter(crypto), p)).NotTo(HaveOccurred())
 }
 
-func (p *Platform) GenerateCoreConfig(peer *node2.Peer) {
+func (p *Platform) GenerateRoutingConfig() {
+	routing, err := os.Create(p.RoutingConfigPath())
+	Expect(err).NotTo(HaveOccurred())
+	defer routing.Close()
+
+	t, err := template.New("routing").Parse(node2.RoutingTemplate)
+	Expect(err).NotTo(HaveOccurred())
+
+	Expect(t.Execute(io.MultiWriter(routing), p)).NotTo(HaveOccurred())
+}
+
+func (p *Platform) GenerateCoreConfig(peer *node2.Replica) {
 	err := os.MkdirAll(p.NodeDir(peer), 0755)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -416,7 +459,7 @@ func (p *Platform) GenerateCoreConfig(peer *node2.Peer) {
 	defer core.Close()
 
 	var extensions []string
-	for _, extensionsByPeerID := range p.Context.ExtensionsByPeerID(peer.Name) {
+	for _, extensionsByPeerID := range p.Context.ExtensionsByPeerID(peer.UniqueName) {
 		// if len(extensionsByPeerID) > 1, we need a merge
 		if len(extensionsByPeerID) > 1 {
 			c := conflate.New()
@@ -440,40 +483,36 @@ func (p *Platform) GenerateCoreConfig(peer *node2.Peer) {
 	}
 
 	t, err := template.New("peer").Funcs(template.FuncMap{
-		"Peer":        func() *node2.Peer { return peer },
-		"NetworkID":   func() string { return p.NetworkID },
-		"Topology":    func() *Topology { return p.Topology },
-		"Extensions":  func() []string { return extensions },
-		"ToLower":     func(s string) string { return strings.ToLower(s) },
-		"ReplaceAll":  func(s, old, new string) string { return strings.Replace(s, old, new, -1) },
-		"NodeKVSPath": func() string { return p.NodeKVSDir(peer) },
-		"Resolvers":   func() []*Resolver { return resolvers },
-	}).Parse(node2.CoreTemplate)
+		"Replica":            func() *node2.Replica { return peer },
+		"Peer":               func() *node2.Peer { return peer.Peer },
+		"NetworkID":          func() string { return p.NetworkID },
+		"Topology":           func() *Topology { return p.Topology },
+		"Extensions":         func() []string { return extensions },
+		"ToLower":            func(s string) string { return strings.ToLower(s) },
+		"ReplaceAll":         func(s, old, new string) string { return strings.Replace(s, old, new, -1) },
+		"NodeKVSPath":        func() string { return p.NodeKVSDir(peer) },
+		"NodeKVSPersistence": func() node2.PersistenceOpts { return peer.Options.GetPersistence("fsc") },
+		"Resolvers":          func() []*Resolver { return resolvers },
+		"WebEnabled":         func() bool { return p.Topology.WebEnabled },
+		"TracingEndpoint": func() string {
+			return utils.DefaultString(p.Topology.Monitoring.TracingEndpoint, fmt.Sprintf("0.0.0.0:%d", optl.JaegerCollectorPort))
+		},
+		"SamplingRatio": func() float64 { return p.Topology.Monitoring.TracingSamplingRatio },
+	}).
+		Parse(p.Topology.Templates.CoreTemplate())
 	Expect(err).NotTo(HaveOccurred())
 	Expect(t.Execute(io.MultiWriter(core), p)).NotTo(HaveOccurred())
 }
 
 func (p *Platform) BootstrapViewNodeGroupRunner() ifrit.Runner {
-	members := grouper.Members{}
-	for _, node := range p.Peers {
-		if node.Bootstrap {
-			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
-		}
-	}
-	return grouper.NewParallel(syscall.SIGTERM, members)
+	return grouper.NewParallel(syscall.SIGTERM, p.members(true))
 }
 
 func (p *Platform) FSCNodeGroupRunner() ifrit.Runner {
-	members := grouper.Members{}
-	for _, node := range p.Peers {
-		if !node.Bootstrap {
-			members = append(members, grouper.Member{Name: node.ID(), Runner: p.FSCNodeRunner(node)})
-		}
-	}
-	return grouper.NewParallel(syscall.SIGTERM, members)
+	return grouper.NewParallel(syscall.SIGTERM, p.members(false))
 }
 
-func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *runner2.Runner {
+func (p *Platform) FSCNodeRunner(node *node2.Replica, env ...string) *runner2.Runner {
 	cmd := p.fscNodeCommand(
 		node,
 		commands.NodeStart{NodeID: node.ID()},
@@ -487,7 +526,7 @@ func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *runner2.Runne
 		AnsiColorCode:     common.NextColor(),
 		Name:              node.ID(),
 		Command:           cmd,
-		StartCheck:        `Started peer with ID=.*, .*, address=`,
+		StartCheck:        `Started peer with ID=.*, address=`,
 		StartCheckTimeout: 1 * time.Minute,
 	}
 
@@ -509,7 +548,7 @@ func (p *Platform) FSCNodeRunner(node *node2.Peer, env ...string) *runner2.Runne
 	return runner2.New(config)
 }
 
-func (p *Platform) fscNodeCommand(node *node2.Peer, command common.Command, tlsDir string, env ...string) *exec.Cmd {
+func (p *Platform) fscNodeCommand(node *node2.Replica, command common.Command, tlsDir string, env ...string) *exec.Cmd {
 	if len(node.ExecutablePath) == 0 {
 		node.ExecutablePath = p.GenerateCmd(nil, node)
 	}
@@ -533,12 +572,12 @@ func (p *Platform) fscNodeCommand(node *node2.Peer, command common.Command, tlsD
 		cmd.Args = append(cmd.Args, "--keyfile", keyfilePath)
 	}
 
-	cmd.Args = append(cmd.Args, "--logging-level", p.Topology.Logging.Spec)
+	cmd.Env = append(cmd.Env, fmt.Sprintf("FSCNODE_LOGGING_SPEC=%s", p.Topology.Logging.Spec))
 
 	return cmd
 }
 
-func (p *Platform) GenerateCmd(output io.Writer, node *node2.Peer) string {
+func (p *Platform) GenerateCmd(output io.Writer, node *node2.Replica) string {
 	err := os.MkdirAll(p.NodeCmdDir(node), 0755)
 	Expect(err).NotTo(HaveOccurred())
 
@@ -550,39 +589,44 @@ func (p *Platform) GenerateCmd(output io.Writer, node *node2.Peer) string {
 	}
 
 	t, err := template.New("node").Funcs(template.FuncMap{
-		"Alias":       func(s string) string { return node.Node.Alias(s) },
-		"InstallView": func() bool { return len(node.Node.Responders) != 0 || len(node.Node.Factories) != 0 },
-	}).Parse(node2.DefaultTemplate)
+		"Alias":           func(s string) string { return node.Node.Alias(s) },
+		"InstallView":     func() bool { return len(node.Node.Responders) != 0 || len(node.Node.Factories) != 0 },
+		"InstallPostgres": func() bool { return GetPersistenceType(node.Peer) == sql.SQLPersistence },
+	}).Parse(p.Topology.Templates.NodeTemplate())
 	Expect(err).NotTo(HaveOccurred())
-	Expect(t.Execute(io.MultiWriter(output), node)).NotTo(HaveOccurred())
+
+	Expect(t.Execute(io.MultiWriter(output), struct {
+		*Platform
+		*node2.Replica
+	}{p, node})).NotTo(HaveOccurred())
 
 	return p.NodeCmdPackage(node)
 }
 
-func (p *Platform) NodeDir(peer *node2.Peer) string {
-	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", peer.Name)
+func (p *Platform) NodeDir(peer *node2.Replica) string {
+	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", peer.UniqueName)
 }
 
-func (p *Platform) NodeClientConfigPath(peer *node2.Peer) string {
-	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", peer.Name, "client-config.yaml")
+func (p *Platform) NodeClientConfigPath(peer *node2.Replica) string {
+	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", peer.UniqueName, "client-config.yaml")
 }
 
-func (p *Platform) NodeKVSDir(peer *node2.Peer) string {
-	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", peer.Name, "kvs")
+func (p *Platform) NodeKVSDir(peer *node2.Replica) string {
+	return filepath.Join(p.Context.RootDir(), "fsc", "nodes", peer.UniqueName, "kvs")
 }
 
-func (p *Platform) NodeConfigPath(peer *node2.Peer) string {
+func (p *Platform) NodeConfigPath(peer *node2.Replica) string {
 	return filepath.Join(p.NodeDir(peer), "core.yaml")
 }
 
-func (p *Platform) NodeCmdDir(peer *node2.Peer) string {
+func (p *Platform) NodeCmdDir(peer *node2.Replica) string {
 	wd, err := os.Getwd()
 	Expect(err).ToNot(HaveOccurred())
 
 	return filepath.Join(wd, "cmd", peer.Name)
 }
 
-func (p *Platform) NodeCmdPackage(peer *node2.Peer) string {
+func (p *Platform) NodeCmdPackage(peer *node2.Replica) string {
 	gopath := os.Getenv("GOPATH")
 	wd, err := os.Getwd()
 	Expect(err).ToNot(HaveOccurred(), "Failed to get working directory: %s", err)
@@ -599,11 +643,11 @@ func (p *Platform) NodeCmdPackage(peer *node2.Peer) string {
 	return filepath.Join(wd, "cmd", peer.Name)
 }
 
-func (p *Platform) NodeCmdPath(peer *node2.Peer) string {
+func (p *Platform) NodeCmdPath(peer *node2.Replica) string {
 	return filepath.Join(p.NodeCmdDir(peer), "main.go")
 }
 
-func (p *Platform) NodePort(node *node2.Peer, portName api.PortName) uint16 {
+func (p *Platform) NodePort(node *node2.Replica, portName api.PortName) uint16 {
 	peerPorts := p.Context.PortsByPeerID("fsc", node.ID())
 	Expect(peerPorts).NotTo(BeNil(), "cannot find ports for [%s][%v]", node.ID(), p.Context.PortsByPeerID)
 	return peerPorts[portName]
@@ -689,7 +733,7 @@ func (p *Platform) Organization(orgName string) *node2.Organization {
 func (p *Platform) ConcatenateTLSCACertificates() {
 	bundle := &bytes.Buffer{}
 	for _, tlsCertPath := range p.listTLSCACertificates() {
-		certBytes, err := ioutil.ReadFile(tlsCertPath)
+		certBytes, err := os.ReadFile(tlsCertPath)
 		Expect(err).NotTo(HaveOccurred())
 		bundle.Write(certBytes)
 	}
@@ -697,7 +741,7 @@ func (p *Platform) ConcatenateTLSCACertificates() {
 		return
 	}
 
-	err := ioutil.WriteFile(p.CACertsBundlePath(), bundle.Bytes(), 0660)
+	err := os.WriteFile(p.CACertsBundlePath(), bundle.Bytes(), 0660)
 	Expect(err).NotTo(HaveOccurred())
 }
 
@@ -715,20 +759,35 @@ func (p *Platform) PeerOrgs() []*node2.Organization {
 }
 
 func (p *Platform) PeersInOrg(orgName string) []*node2.Peer {
+	included := map[string]bool{}
 	var peers []*node2.Peer
 	for _, o := range p.Peers {
-		if o.Organization == orgName {
-			peers = append(peers, o)
+		if o.Organization == orgName && !included[o.Name] {
+			peers = append(peers, o.Peer)
+			included[o.Name] = true
 		}
 	}
 	return peers
 }
 
-func (p *Platform) PeerAddress(peer *node2.Peer, portName api.PortName) string {
-	return fmt.Sprintf("127.0.0.1:%d", p.PeerPort(peer, portName))
+func (p *Platform) PeerAddress(peer *node2.Replica, portName api.PortName) string {
+	return fmt.Sprintf("%s:%d", p.PeerHost(peer), p.PeerPort(peer, portName))
 }
 
-func (p *Platform) PeerPort(peer *node2.Peer, portName api.PortName) uint16 {
+func (p *Platform) PeerHost(peer *node2.Replica) string {
+	return p.Context.HostByPeerID("fsc", peer.ID())
+}
+
+func (p *Platform) GetReplicas(peer *node2.Peer) []*node2.Replica {
+	uniqueNames := peer.ReplicaUniqueNames()
+	replicas := make([]*node2.Replica, len(uniqueNames))
+	for i, uniqueName := range uniqueNames {
+		replicas[i] = &node2.Replica{Peer: peer, UniqueName: uniqueName}
+	}
+	return replicas
+}
+
+func (p *Platform) PeerPort(peer *node2.Replica, portName api.PortName) uint16 {
 	peerPorts := p.Context.PortsByPeerID("fsc", peer.ID())
 	Expect(peerPorts).NotTo(BeNil())
 	return peerPorts[portName]
@@ -749,19 +808,6 @@ func (p *Platform) GetSigningIdentity(peer *node2.Peer) (view.SigningIdentity, e
 
 func (p *Platform) GetAdminSigningIdentity(peer *node2.Peer) (view.SigningIdentity, error) {
 	return view.NewX509SigningIdentity(p.AdminLocalMSPIdentityCert(peer), p.AdminLocalMSPPrivateKey(peer))
-}
-
-func (p *Platform) MetricsAggregator() *runner2.Runner {
-	cmd := common.NewCommand(p.Builder.Build(p.Topology.TraceAggregator), &commands2.AggregatorStart{NodeID: "aggregator"})
-	config := runner2.Config{
-		AnsiColorCode:     common.NextColor(),
-		Name:              "aggregator",
-		Command:           cmd,
-		StartCheck:        `Started aggregator`,
-		StartCheckTimeout: 1 * time.Minute,
-	}
-
-	return runner2.New(config)
 }
 
 func (p *Platform) listTLSCACertificates() []string {
@@ -825,6 +871,14 @@ func (p *Platform) nextColor() string {
 
 	p.colorIndex++
 	return fmt.Sprintf("%dm", color)
+}
+
+func GetPersistenceType(peer *node2.Peer) driver2.PersistenceType {
+	return peer.Options.GetPersistence("fsc").Type
+}
+
+func GetPersistenceDataSource(peer *node2.Peer) string {
+	return peer.Options.GetPersistence("fsc").SQL.DataSource
 }
 
 // PeerPortNames returns the list of ports that need to be reserved for a Peer.

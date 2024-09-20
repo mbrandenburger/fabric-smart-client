@@ -1,5 +1,11 @@
 # pinned versions
-FABRIC_VERSION=2.2
+FABRIC_VERSION ?= 2.5.0
+FABRIC_TWO_DIGIT_VERSION = $(shell echo $(FABRIC_VERSION) | cut -d '.' -f 1,2)
+ORION_VERSION=v0.2.10
+
+# need to install fabric binaries outside of fsc tree for now (due to chaincode packaging issues)
+FABRIC_BINARY_BASE=$(PWD)/../fabric
+FAB_BINS ?= $(FABRIC_BINARY_BASE)/bin
 
 # integration test options
 GINKGO_TEST_OPTS ?=
@@ -8,7 +14,7 @@ GINKGO_TEST_OPTS += --slow-spec-threshold=60s
 
 TOP = .
 
-all: install-tools checks unit-tests #integration-tests
+all: install-tools install-softhsm checks unit-tests #integration-tests
 
 .PHONY: install-tools
 install-tools:
@@ -16,28 +22,40 @@ install-tools:
 	@echo Installing tools from tools/tools.go
 	@cd tools; cat tools.go | grep _ | awk -F'"' '{print $$2}' | xargs -tI % go install %
 
+.PHONY: download-fabric
+download-fabric:
+	./ci/scripts/download_fabric.sh $(FABRIC_BINARY_BASE) $(FABRIC_VERSION)
+
 # include the checks target
 include $(TOP)/checks.mk
 
 .PHONY: unit-tests
-unit-tests:
-	@go test -cover $(shell go list ./... | grep -v '/integration/')
+unit-tests: testing-docker-images
+	@export FAB_BINS=$(FAB_BINS); go test -cover $(shell go list ./... | grep -v '/integration/')
 	cd integration/nwo/; go test -cover ./...
 
+.PHONY: install-softhsm
+install-softhsm:
+	./ci/scripts/install_softhsm.sh
+
+run-optl:
+	cd platform/view/services/tracing; docker-compose up -d 
+	
+ 	
 .PHONY: unit-tests-race
 unit-tests-race:
-	@export GORACE=history_size=7; go test -race -cover $(shell go list ./... | grep -v '/integration/')
-	cd integration/nwo/; go test -cover ./...
+	@export GORACE=history_size=7; export FAB_BINS=$(FAB_BINS); go test -race -cover $(shell go list ./... | grep -v '/integration/')
+	cd integration/nwo/; export FAB_BINS=$(FAB_BINS); go test -cover ./...
 
 .PHONY: docker-images
-docker-images: fabric-docker-images weaver-docker-images fpc-docker-images orion-server-images monitoring-docker-images
+docker-images: fabric-docker-images weaver-docker-images fpc-docker-images orion-server-images monitoring-docker-images testing-docker-images
 
 .PHONY: fabric-docker-images
 fabric-docker-images:
-	docker pull hyperledger/fabric-baseos:$(FABRIC_VERSION)
-	docker image tag hyperledger/fabric-baseos:$(FABRIC_VERSION) hyperledger/fabric-baseos:latest
-	docker pull hyperledger/fabric-ccenv:$(FABRIC_VERSION)
-	docker image tag hyperledger/fabric-ccenv:$(FABRIC_VERSION) hyperledger/fabric-ccenv:latest
+	docker pull hyperledger/fabric-baseos:$(FABRIC_TWO_DIGIT_VERSION)
+	docker image tag hyperledger/fabric-baseos:$(FABRIC_TWO_DIGIT_VERSION) hyperledger/fabric-baseos:latest
+	docker pull hyperledger/fabric-ccenv:$(FABRIC_TWO_DIGIT_VERSION)
+	docker image tag hyperledger/fabric-ccenv:$(FABRIC_TWO_DIGIT_VERSION) hyperledger/fabric-ccenv:latest
 
 .PHONY: weaver-docker-images
 weaver-docker-images:
@@ -55,66 +73,80 @@ fpc-docker-images:
 
 .PHONY: monitoring-docker-images
 monitoring-docker-images:
-	docker pull hyperledger/explorer-db:latest
-	docker pull hyperledger/explorer:latest
+	docker pull ghcr.io/hyperledger-labs/explorer-db:latest
+	docker pull ghcr.io/hyperledger-labs/explorer:latest
 	docker pull prom/prometheus:latest
 	docker pull grafana/grafana:latest
+	docker pull jaegertracing/all-in-one:latest
+	docker pull otel/opentelemetry-collector:latest
 
 .PHONY: orion-server-images
 orion-server-images:
-	docker pull orionbcdb/orion-server:latest
+	docker pull orionbcdb/orion-server:$(ORION_VERSION)
+	docker image tag orionbcdb/orion-server:$(ORION_VERSION) orionbcdb/orion-server:latest
+
+.PHONY: testing-docker-images
+testing-docker-images:
+	docker pull postgres:16.2-alpine
+	docker tag postgres:16.2-alpine postgres:latest
+
+INTEGRATION_TARGETS = integration-tests-iou
+INTEGRATION_TARGETS += integration-tests-atsacc
+INTEGRATION_TARGETS += integration-tests-chaincode-events
+INTEGRATION_TARGETS += integration-tests-atsafsc
+INTEGRATION_TARGETS += integration-tests-twonets
+INTEGRATION_TARGETS += integration-tests-pingpong
+INTEGRATION_TARGETS += integration-tests-stoprestart
 
 .PHONY: integration-tests
-integration-tests:
-	cd ./integration/fabric/iou; ginkgo $(GINKGO_TEST_OPTS) .
-	cd ./integration/fabric/atsa/chaincode; ginkgo $(GINKGO_TEST_OPTS) .
-	cd ./integration/fabric/atsa/fsc; ginkgo $(GINKGO_TEST_OPTS) .
-	cd ./integration/fabric/twonets; ginkgo $(GINKGO_TEST_OPTS) .
-	cd ./integration/fsc/pingpong/; ginkgo $(GINKGO_TEST_OPTS) .
-	cd ./integration/fsc/stoprestart; ginkgo $(GINKGO_TEST_OPTS) .
+integration-tests: $(INTEGRATION_TARGETS)
 
 .PHONY: integration-tests-iou
 integration-tests-iou:
-	cd ./integration/fabric/iou; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/iou; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-iou-hsm
 integration-tests-iou-hsm:
 	@echo "Setup SoftHSM"
 	@./ci/scripts/setup_softhsm.sh
 	@echo "Start Integration Test"
-	cd ./integration/fabric/iouhsm; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/iouhsm; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-atsacc
 integration-tests-atsacc:
-	cd ./integration/fabric/atsa/chaincode; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/atsa/chaincode; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
+
+.PHONY: integration-tests-chaincode-events
+integration-tests-chaincode-events:
+	cd ./integration/fabric/events/chaincode; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-atsafsc
 integration-tests-atsafsc:
-	cd ./integration/fabric/atsa/fsc; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/atsa/fsc; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-twonets
 integration-tests-twonets:
-	cd ./integration/fabric/twonets; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/twonets; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-fpc-echo
 integration-tests-fpc-echo:
-	cd ./integration/fabric/fpc/echo; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/fpc/echo; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-weaver-relay
 integration-tests-weaver-relay:
-	cd ./integration/fabric/weaver/relay; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/weaver/relay; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-fabric-stoprestart
 integration-tests-fabric-stoprestart:
-	cd ./integration/fabric/stoprestart; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fabric/stoprestart; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-pingpong
 integration-tests-pingpong:
-	cd ./integration/fsc/pingpong/; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fsc/pingpong/; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-stoprestart
 integration-tests-stoprestart:
-	cd ./integration/fsc/stoprestart; ginkgo $(GINKGO_TEST_OPTS) .
+	cd ./integration/fsc/stoprestart; export FAB_BINS=$(FAB_BINS); ginkgo $(GINKGO_TEST_OPTS) .
 
 .PHONY: integration-tests-orioncars
 integration-tests-orioncars:
@@ -122,7 +154,10 @@ integration-tests-orioncars:
 
 .PHONY: tidy
 tidy:
-	@go mod tidy -compat=1.17
+	@go mod tidy
+	cd tools; go mod tidy
+	cd integration/fabric/weaver/relay/chaincode; go mod tidy
+	cd platform/fabric/services/state/cc/query; go mod tidy
 
 .PHONY: clean
 clean:
@@ -131,6 +166,7 @@ clean:
 	rm -rf ./build
 	rm -rf ./testdata
 	rm -rf ./integration/fabric/atsa/chaincode/cmd
+	rm -rf ./integration/fabric/events/chaincode/cmd
 	rm -rf ./integration/fabric/atsa/fsc/cmd
 	rm -rf ./integration/fabric/iou/cmd/
 	rm -rf ./integration/fabric/iou/testdata/

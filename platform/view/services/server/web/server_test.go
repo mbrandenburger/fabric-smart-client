@@ -10,7 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -19,15 +19,14 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/hyperledger/fabric/core/operations/fakes"
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	"github.com/tedsuo/ifrit"
-
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc/tlsgen"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/metrics/operations/fakes"
 	web2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/server/web"
 	fakes3 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/server/web/fakes"
 	mocks2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/server/web/mocks"
+	. "github.com/onsi/ginkgo/v2"
+	. "github.com/onsi/gomega"
+	"github.com/tedsuo/ifrit"
 )
 
 var (
@@ -44,28 +43,28 @@ func TestFabHTTP(t *testing.T) {
 }
 
 func generateCertificates(tempDir string) {
-	err := ioutil.WriteFile(filepath.Join(tempDir, "server-ca.pem"), tlsCA.CertBytes(), 0640)
+	err := os.WriteFile(filepath.Join(tempDir, "server-ca.pem"), tlsCA.CertBytes(), 0640)
 	Expect(err).NotTo(HaveOccurred())
 	serverKeyPair, err := tlsCA.NewServerCertKeyPair("127.0.0.1")
 	Expect(err).NotTo(HaveOccurred())
-	err = ioutil.WriteFile(filepath.Join(tempDir, "server-cert.pem"), serverKeyPair.Cert, 0640)
+	err = os.WriteFile(filepath.Join(tempDir, "server-cert.pem"), serverKeyPair.Cert, 0640)
 	Expect(err).NotTo(HaveOccurred())
-	err = ioutil.WriteFile(filepath.Join(tempDir, "server-key.pem"), serverKeyPair.Key, 0640)
+	err = os.WriteFile(filepath.Join(tempDir, "server-key.pem"), serverKeyPair.Key, 0640)
 	Expect(err).NotTo(HaveOccurred())
 
-	err = ioutil.WriteFile(filepath.Join(tempDir, "client-ca.pem"), tlsCA.CertBytes(), 0640)
+	err = os.WriteFile(filepath.Join(tempDir, "client-ca.pem"), tlsCA.CertBytes(), 0640)
 	Expect(err).NotTo(HaveOccurred())
 	clientKeyPair, err := tlsCA.NewClientCertKeyPair()
 	Expect(err).NotTo(HaveOccurred())
-	err = ioutil.WriteFile(filepath.Join(tempDir, "client-cert.pem"), clientKeyPair.Cert, 0640)
+	err = os.WriteFile(filepath.Join(tempDir, "client-cert.pem"), clientKeyPair.Cert, 0640)
 	Expect(err).NotTo(HaveOccurred())
-	err = ioutil.WriteFile(filepath.Join(tempDir, "client-key.pem"), clientKeyPair.Key, 0640)
+	err = os.WriteFile(filepath.Join(tempDir, "client-key.pem"), clientKeyPair.Key, 0640)
 	Expect(err).NotTo(HaveOccurred())
 }
 
 func newHTTPClient(tlsDir string, withClientCert bool) *http.Client {
 	clientCertPool := x509.NewCertPool()
-	caCert, err := ioutil.ReadFile(filepath.Join(tlsDir, "server-ca.pem"))
+	caCert, err := os.ReadFile(filepath.Join(tlsDir, "server-ca.pem"))
 	Expect(err).NotTo(HaveOccurred())
 	clientCertPool.AppendCertsFromPEM(caCert)
 
@@ -102,7 +101,7 @@ var _ = Describe("Server", func() {
 
 	BeforeEach(func() {
 		var err error
-		tempDir, err = ioutil.TempDir("", "http-test")
+		tempDir, err = os.MkdirTemp("", "http-test")
 		Expect(err).NotTo(HaveOccurred())
 
 		generateCertificates(tempDir)
@@ -116,6 +115,7 @@ var _ = Describe("Server", func() {
 				Enabled:           true,
 				CertFile:          filepath.Join(tempDir, "server-cert.pem"),
 				KeyFile:           filepath.Join(tempDir, "server-key.pem"),
+				ClientAuth:        true,
 				ClientCACertFiles: []string{filepath.Join(tempDir, "client-ca.pem")},
 			},
 		}
@@ -156,7 +156,7 @@ var _ = Describe("Server", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(resp.StatusCode).To(Equal(http.StatusOK))
 			Expect(resp.Header.Get("Content-Type")).To(Equal("application/json"))
-			buff, err := ioutil.ReadAll(resp.Body)
+			buff, err := io.ReadAll(resp.Body)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(strings.Trim(string(buff), "\n")).To(Equal(`{"status":"OK"}`))
 			resp.Body.Close()
@@ -174,7 +174,11 @@ var _ = Describe("Server", func() {
 
 			url := fmt.Sprintf("https://%s%s", server.Addr(), someURL)
 			resp, err := client.Get(url)
-			Expect(err.Error()).To(ContainSubstring("remote error: tls: bad certificate"))
+			Expect(err).To(HaveOccurred())
+			go120message := "remote error: tls: bad certificate"
+			go121message := "remote error: tls: certificate required"
+			match := strings.Contains(err.Error(), go120message) || strings.Contains(err.Error(), go121message)
+			Expect(match).To(BeTrue())
 			Expect(resp).To(BeNil())
 		})
 	})
@@ -189,7 +193,7 @@ var _ = Describe("Server", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(resp.StatusCode).To(Equal(http.StatusOK))
 		Expect(resp.Header.Get("Content-Type")).To(Equal("text/plain; charset=utf-8"))
-		buff, err := ioutil.ReadAll(resp.Body)
+		buff, err := io.ReadAll(resp.Body)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(buff)).To(Equal("secure"))
 		resp.Body.Close()

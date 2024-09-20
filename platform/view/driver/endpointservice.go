@@ -24,22 +24,23 @@ const (
 	P2PPort PortName = "P2P"
 )
 
-// PKIResolver extracts public key ids from identities
-type PKIResolver interface {
-	// GetPKIidOfCert returns the id of the public key contained in the passed identity
-	GetPKIidOfCert(peerIdentity view.Identity) []byte
+// PublicKeyExtractor extracts public keys from identities
+type PublicKeyExtractor interface {
+	// ExtractPublicKey returns the public key corresponding to the passed identity
+	ExtractPublicKey(id view.Identity) (any, error)
+}
+
+type PublicKeyIDSynthesizer interface {
+	PublicKeyID(any) []byte
 }
 
 //go:generate counterfeiter -o mock/resolver.go -fake-name EndpointService . EndpointService
 
 // EndpointService models the endpoint service
 type EndpointService interface {
-	// Endpoint returns the known endpoints bound to the passed identity
-	Endpoint(party view.Identity) (map[PortName]string, error)
-
 	// Resolve returns the identity the passed identity is bound to.
 	// It returns also: the endpoints and the pkiID
-	Resolve(party view.Identity) (view.Identity, map[PortName]string, []byte, error)
+	Resolve(party view.Identity) (string, view.Identity, map[PortName]string, []byte, error)
 
 	// GetIdentity returns an identity bound to either the passed label or public-key identifier.
 	GetIdentity(label string, pkiID []byte) (view.Identity, error)
@@ -56,8 +57,10 @@ type EndpointService interface {
 	// identity is returned
 	AddResolver(name string, domain string, addresses map[string]string, aliases []string, id []byte) (view.Identity, error)
 
-	// AddPKIResolver add a new PKI resolver
-	AddPKIResolver(pkiResolver PKIResolver) error
+	// AddPublicKeyExtractor add a new PK extractor
+	AddPublicKeyExtractor(pkExtractor PublicKeyExtractor) error
+
+	SetPublicKeyIDSynthesizer(synthesizer PublicKeyIDSynthesizer)
 }
 
 // GetEndpointService returns an instance of the endpoint service.

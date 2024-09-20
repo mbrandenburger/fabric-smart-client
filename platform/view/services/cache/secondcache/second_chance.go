@@ -14,15 +14,15 @@ import (
 // This package implements Second-Chance Algorithm, an approximate LRU algorithms.
 // https://www.cs.jhu.edu/~yairamir/cs418/os6/tsld023.htm
 
-// secondChanceCache holds key-value items with a limited size.
+// typedSecondChanceCache holds key-value items with a limited size.
 // When the number cached items exceeds the limit, victims are selected based on the
 // Second-Chance Algorithm and Get purged
-type secondChanceCache struct {
+type typedSecondChanceCache[T any] struct {
 	// manages mapping between keys and items
-	table map[string]*cacheItem
+	table map[string]*cacheItem[T]
 
 	// holds a list of cached items.
-	items []*cacheItem
+	items []*cacheItem[T]
 
 	// indicates the next candidate of a victim in the items list
 	position int
@@ -31,29 +31,39 @@ type secondChanceCache struct {
 	rwlock sync.RWMutex
 }
 
-type cacheItem struct {
+type cacheItem[T any] struct {
 	key   string
-	value interface{}
+	value T
 	// set to 1 when Get() is called. set to 0 when victim scan
 	referenced int32
 }
 
+type secondChanceCache = typedSecondChanceCache[interface{}]
+
 func New(cacheSize int) *secondChanceCache {
-	var cache secondChanceCache
+	return NewTyped[interface{}](cacheSize)
+}
+
+func NewTyped[T any](cacheSize int) *typedSecondChanceCache[T] {
+	var cache typedSecondChanceCache[T]
 	cache.position = 0
-	cache.items = make([]*cacheItem, cacheSize)
-	cache.table = make(map[string]*cacheItem)
+	cache.items = make([]*cacheItem[T], cacheSize)
+	cache.table = make(map[string]*cacheItem[T])
 
 	return &cache
 }
 
-func (cache *secondChanceCache) Get(key string) (interface{}, bool) {
+func (cache *typedSecondChanceCache[T]) Get(key string) (T, bool) {
 	cache.rwlock.RLock()
 	defer cache.rwlock.RUnlock()
 
+	return cache.get(key)
+}
+
+func (cache *typedSecondChanceCache[T]) get(key string) (T, bool) {
 	item, ok := cache.table[key]
 	if !ok {
-		return nil, false
+		return zero[T](), false
 	}
 
 	// referenced bit is set to true to indicate that this item is recently accessed.
@@ -62,17 +72,47 @@ func (cache *secondChanceCache) Get(key string) (interface{}, bool) {
 	return item.value, true
 }
 
-func (cache *secondChanceCache) Add(key string, value interface{}) {
+func (cache *typedSecondChanceCache[T]) GetOrLoad(key string, loader func() (T, error)) (T, bool, error) {
+	cache.rwlock.RLock()
+
+	if value, ok := cache.get(key); ok {
+		cache.rwlock.RUnlock()
+		return value, true, nil
+	}
+	cache.rwlock.RUnlock()
+
 	cache.rwlock.Lock()
 	defer cache.rwlock.Unlock()
 
+	if value, ok := cache.get(key); ok {
+		return value, true, nil
+	}
+
+	value, err := loader()
+	if err != nil {
+		return zero[T](), false, err
+	}
+
+	cache.add(key, value)
+
+	return value, false, nil
+}
+
+func (cache *typedSecondChanceCache[T]) Add(key string, value T) {
+	cache.rwlock.Lock()
+	defer cache.rwlock.Unlock()
+
+	cache.add(key, value)
+}
+
+func (cache *typedSecondChanceCache[T]) add(key string, value T) {
 	if old, ok := cache.table[key]; ok {
 		old.value = value
 		atomic.StoreInt32(&old.referenced, 1)
 		return
 	}
 
-	var item cacheItem
+	var item cacheItem[T]
 	item.key = key
 	item.value = value
 
@@ -105,15 +145,20 @@ func (cache *secondChanceCache) Add(key string, value interface{}) {
 	}
 }
 
-func (cache *secondChanceCache) Delete(key string) {
+func (cache *typedSecondChanceCache[T]) Delete(key string) {
 	cache.rwlock.Lock()
 	defer cache.rwlock.Unlock()
 
 	if old, ok := cache.table[key]; ok {
-		old.value = nil
+		old.value = zero[T]()
 		atomic.StoreInt32(&old.referenced, 1)
 		return
 	}
+}
+
+func zero[T any]() T {
+	var result T
+	return result
 }
 
 type Slice [64]byte

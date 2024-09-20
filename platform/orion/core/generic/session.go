@@ -7,10 +7,15 @@ SPDX-License-Identifier: Apache-2.0
 package generic
 
 import (
+	"encoding/base64"
+	"net/url"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
 	config2 "github.com/hyperledger-labs/fabric-smart-client/platform/orion/core/generic/config"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/core/generic/ledger"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/orion/driver"
 	"github.com/hyperledger-labs/orion-sdk-go/pkg/bcdb"
 	"github.com/hyperledger-labs/orion-sdk-go/pkg/config"
@@ -24,26 +29,38 @@ type DataTx struct {
 	dataTx bcdb.DataTxContext
 }
 
-func (d *DataTx) Put(db string, key string, bytes []byte, a *types.AccessControl) error {
-	if err := d.dataTx.Put(db, key, bytes, a); err != nil {
+func (d *DataTx) Put(db string, key string, bytes []byte, a driver.AccessControl) error {
+	key = sanitizeKey(key)
+	var ac *types.AccessControl
+	if a != nil {
+		var ok bool
+		ac, ok = a.(*types.AccessControl)
+		if !ok {
+			return errors.Errorf("expecged *types.AccessControl, got [%T]", a)
+		}
+	}
+	if err := d.dataTx.Put(db, key, bytes, ac); err != nil {
 		return errors.Wrapf(err, "failed putting data")
 	}
 	return nil
 }
 
-func (d *DataTx) Get(db string, key string) ([]byte, *types.Metadata, error) {
-	r, m, err := d.dataTx.Get(db, key)
+func (d *DataTx) Get(db string, key string) ([]byte, error) {
+	key = sanitizeKey(key)
+	r, _, err := d.dataTx.Get(db, key)
 	if err != nil {
-		return nil, nil, errors.Wrapf(err, "failed getting data")
+		return nil, errors.Wrapf(err, "failed getting data")
 	}
-	return r, m, nil
+	return r, nil
 }
 
-func (d *DataTx) Commit(b bool) (string, *types.TxReceiptResponseEnvelope, error) {
-	return d.dataTx.Commit(b)
+func (d *DataTx) Commit(sync bool) (string, error) {
+	s, _, err := d.dataTx.Commit(sync)
+	return s, err
 }
 
 func (d *DataTx) Delete(db string, key string) error {
+	key = sanitizeKey(key)
 	return d.dataTx.Delete(db, key)
 }
 
@@ -52,7 +69,7 @@ func (d *DataTx) SignAndClose() ([]byte, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed signing and closing data tx")
 	}
-	return proto.Marshal(env)
+	return proto.Marshal(env.(*types.DataTxEnvelope))
 }
 
 func (d *DataTx) AddMustSignUser(userID string) {
@@ -78,15 +95,39 @@ func (l *LoadedDataTx) CoSignAndClose() ([]byte, error) {
 	if err != nil {
 		return nil, errors.Wrapf(err, "failed co-signing and closing envelope")
 	}
-	return proto.Marshal(env)
+	return proto.Marshal(env.(*types.DataTxEnvelope))
 }
 
-func (l *LoadedDataTx) Reads() map[string][]*types.DataRead {
-	return l.loadedDataTx.Reads()
+func (l *LoadedDataTx) Reads() map[string][]*driver.DataRead {
+	res := map[string][]*driver.DataRead{}
+	source := l.loadedDataTx.Reads()
+	for s, reads := range source {
+		newReads := make([]*driver.DataRead, len(reads))
+		for i, read := range reads {
+			newReads[i] = &driver.DataRead{
+				Key: read.Key,
+			}
+		}
+		res[s] = newReads
+	}
+	return res
 }
 
-func (l *LoadedDataTx) Writes() map[string][]*types.DataWrite {
-	return l.loadedDataTx.Writes()
+func (l *LoadedDataTx) Writes() map[string][]*driver.DataWrite {
+	res := map[string][]*driver.DataWrite{}
+	source := l.loadedDataTx.Writes()
+	for s, writes := range source {
+		newWrites := make([]*driver.DataWrite, len(writes))
+		for i, write := range writes {
+			newWrites[i] = &driver.DataWrite{
+				Key:   write.Key,
+				Value: write.Value,
+				Acl:   write.Acl,
+			}
+		}
+		res[s] = newWrites
+	}
+	return res
 }
 
 func (l *LoadedDataTx) MustSignUsers() []string {
@@ -97,11 +138,18 @@ func (l *LoadedDataTx) SignedUsers() []string {
 	return l.loadedDataTx.SignedUsers()
 }
 
+// Session implements a thread-safe session to orion
 type Session struct {
+	// DBSession is not thread-sage
 	s bcdb.DBSession
+
+	mutex sync.Mutex
 }
 
 func (s *Session) DataTx(txID string) (driver.DataTx, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	var dataTx bcdb.DataTxContext
 	var err error
 	if len(txID) != 0 {
@@ -115,9 +163,26 @@ func (s *Session) DataTx(txID string) (driver.DataTx, error) {
 	return &DataTx{dataTx: dataTx}, nil
 }
 
-func (s *Session) LoadDataTx(env *types.DataTxEnvelope) (driver.LoadedDataTx, error) {
+func (s *Session) LoadDataTx(envBoxed interface{}) (driver.LoadedDataTx, error) {
+	var env *types.DataTxEnvelope
+
+	switch v := envBoxed.(type) {
+	case []byte:
+		env = &types.DataTxEnvelope{}
+		if err := proto.Unmarshal(v, env); err != nil {
+			return nil, errors.WithMessagef(err, "failed to unmarshal env")
+		}
+	case *types.DataTxEnvelope:
+		env = v
+	default:
+		return nil, errors.Errorf("expected *types.DataTxEnvelope or []byte, got [%T]", envBoxed)
+	}
+
 	var dataTx bcdb.LoadedDataTxContext
 	var err error
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	dataTx, err = s.s.LoadDataTx(env)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed getting data tc")
@@ -129,11 +194,25 @@ func (s *Session) LoadDataTx(env *types.DataTxEnvelope) (driver.LoadedDataTx, er
 }
 
 func (s *Session) Ledger() (driver.Ledger, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
 	l, err := s.s.Ledger()
 	if err != nil {
 		return nil, errors.Wrap(err, "failed getting ledger")
 	}
-	return &Ledger{ledger: l}, nil
+	return ledger.NewLedger(l), nil
+}
+
+func (s *Session) Query() (driver.Query, error) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+
+	q, err := s.s.Query()
+	if err != nil {
+		return nil, errors.Wrap(err, "failed getting query")
+	}
+	return &Query{query: q}, nil
 }
 
 type SessionManager struct {
@@ -188,4 +267,32 @@ func (s *SessionManager) NewSession(id string) (driver.Session, error) {
 		TxTimeout: time.Second * 5,
 	})
 	return &Session{s: session}, err
+}
+
+// sanitizeKey makes sure that each component in the key can be correctly be url escaped
+func sanitizeKey(key string) string {
+	escaped := false
+	components := strings.Split(key, "~")
+	for i, c := range components {
+		cc := url.PathEscape(c)
+		if c != cc {
+			components[i] = base64.StdEncoding.EncodeToString([]byte(c))
+			escaped = true
+		}
+	}
+	if !escaped {
+		return key
+	}
+
+	b := strings.Builder{}
+	for i := 0; i < len(components); i++ {
+		b.WriteString(components[i])
+		if i < len(components)-1 {
+			b.WriteRune('~')
+		}
+	}
+	if strings.HasSuffix(key, "~") {
+		b.WriteRune('~')
+	}
+	return b.String()
 }

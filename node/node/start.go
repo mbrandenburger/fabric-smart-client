@@ -15,8 +15,8 @@ import (
 
 	"github.com/hyperledger-labs/fabric-smart-client/node/node/profile"
 	node3 "github.com/hyperledger-labs/fabric-smart-client/pkg/node"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/flogging"
+	"github.com/pkg/errors"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +28,7 @@ const (
 type Node interface {
 	Start() error
 	Stop()
-	Registry() node3.Registry
+	ConfigService() node3.ConfigService
 	Callback() chan<- error
 }
 
@@ -58,7 +58,7 @@ func startCmd() *cobra.Command {
 		Long:  `Starts the fabric smart client node that interacts with the network.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) != 0 {
-				return fmt.Errorf("trailing args detected")
+				return errors.Errorf("trailing args detected")
 			}
 			cmd.SilenceUsage = true
 			return serve()
@@ -149,13 +149,13 @@ func serve() error {
 		callback(err)
 		return err
 	}
+
 	callback(nil)
 
-	cs := view.GetConfigService(node.Registry())
-	logger.Infof("Started peer with ID=[%s], network ID=[%s], address=[%s]",
+	cs := node.ConfigService()
+	logger.Infof("Started peer with ID=[%s], address=[%s]",
 		cs.GetString("fsc.id"),
-		cs.GetString("fsc.networkId"),
-		cs.GetString("fsc.address"),
+		cs.GetString("fsc.grpc.address"),
 	)
 	return <-serve
 }
