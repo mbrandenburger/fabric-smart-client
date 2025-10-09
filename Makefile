@@ -17,6 +17,7 @@ FAB_BINS ?= $(FABRIC_BINARY_BASE)/bin
 
 # integration test options
 GINKGO_TEST_OPTS ?=
+GINKGO_TEST_OPTS += --vv
 GINKGO_TEST_OPTS += --poll-progress-after 60s
 GINKGO_TEST_OPTS += --keep-going
 
