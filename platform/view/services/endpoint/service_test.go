@@ -66,6 +66,7 @@ func TestGetIdentity(t *testing.T) {
 	_, err = service.AddResolver(
 		"alice",
 		"fsc.domain",
+		nil,
 		map[string]string{string(endpoint.P2PPort): "localhost:1010"},
 		[]string{"apple", "strawberry"},
 		[]byte("alice_id"),
@@ -78,6 +79,7 @@ func TestGetIdentity(t *testing.T) {
 	_, err = service.AddResolver(
 		"alice",
 		"fabric.domain",
+		nil,
 		map[string]string{string(endpoint.P2PPort): "localhost:1010"},
 		[]string{"apricot"},
 		[]byte("alice_id2"),
@@ -164,6 +166,7 @@ func TestGetIdentity(t *testing.T) {
 		_, err = service.AddResolver(
 			"alice",
 			"fsc.domain",
+			nil,
 			map[string]string{string(endpoint.P2PPort): "localhost:1010"},
 			[]string{"apple", "strawberry"},
 			[]byte("alice_id"),
