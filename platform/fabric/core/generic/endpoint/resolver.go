@@ -38,7 +38,7 @@ func (r *Resolver) GetIdentity() (view.Identity, error) {
 
 type Service interface {
 	Bind(ctx context.Context, longTerm view.Identity, ephemeral ...view.Identity) error
-	AddResolver(name string, domain string, addresses map[string]string, aliases []string, id []byte) (view.Identity, error)
+	AddResolver(name string, domain string, tlsrootca []byte, addresses map[string]string, aliases []string, id []byte) (view.Identity, error)
 	AddPublicKeyExtractor(extractor endpoint.PublicKeyExtractor) error
 }
 
@@ -106,7 +106,7 @@ func (r *ResolverService) LoadResolvers() error {
 		logger.Debugf("Resolver [%s,%s][%s] %s", resolver.Name, resolver.Domain, resolver.Addresses, view.Identity(resolver.Id))
 
 		// Add Resolver
-		rootID, err := r.service.AddResolver(resolver.Name, resolver.Domain, resolver.Addresses, resolver.Aliases, resolver.Id)
+		rootID, err := r.service.AddResolver(resolver.Name, resolver.Domain, nil, resolver.Addresses, resolver.Aliases, resolver.Id)
 		if err != nil {
 			return errors.Wrapf(err, "failed adding resolver")
 		}

@@ -54,6 +54,7 @@ type ResolverInfo struct {
 	ID          []byte
 	Name        string
 	Domain      string
+	TLSRootCa   []byte
 	Addresses   map[PortName]string
 	AddressList []string
 	Aliases     []string
@@ -193,6 +194,7 @@ func (r *Service) GetIdentity(label string, pkID []byte) (view.Identity, error) 
 func (r *Service) AddResolver(
 	name string,
 	domain string,
+	tlsRootCa []byte,
 	addresses map[string]string,
 	aliases []string,
 	id []byte,
@@ -226,6 +228,7 @@ func (r *Service) AddResolver(
 		ResolverInfo: ResolverInfo{
 			Name:        name,
 			Domain:      domain,
+			TLSRootCa:   tlsRootCa,
 			Addresses:   convert(addresses),
 			AddressList: addressList,
 			Aliases:     aliases,

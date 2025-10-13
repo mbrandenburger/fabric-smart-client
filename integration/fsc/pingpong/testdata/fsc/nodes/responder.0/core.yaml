@@ -109,9 +109,10 @@ fsc:
     resolvers: 
     - name: initiator
       domain: fsc.example.com
+      tlsrootca: ./../../crypto/peerOrganizations/fsc.example.com/peers/initiator.fsc.example.com/tls/ca.crt
       identity:
         path: ./../../crypto/peerOrganizations/fsc.example.com/peers/initiator.fsc.example.com/msp/signcerts/initiator.fsc.example.com-cert.pem
       addresses: 
-        P2P: 127.0.0.1:21001
+        P2P: 127.0.0.1:21000
       aliases: 
         - alice

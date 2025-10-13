@@ -109,9 +109,11 @@ fsc:
     resolvers: 
     - name: responder
       domain: fsc.example.com
+      tlsrootca: ./../../crypto/peerOrganizations/fsc.example.com/peers/responder.fsc.example.com/tls/ca.crt
       identity:
         path: ./../../crypto/peerOrganizations/fsc.example.com/peers/responder.fsc.example.com/msp/signcerts/responder.fsc.example.com-cert.pem
-      addresses: 
+      addresses:
+        P2P: 127.0.0.1:21003
       aliases: 
         - bob
 
