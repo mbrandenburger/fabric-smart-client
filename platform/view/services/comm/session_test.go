@@ -231,3 +231,41 @@ func TestSessionDeadlock(t *testing.T) {
 	// msg2 should not be published
 	require.Empty(t, ch)
 }
+
+func BenchmarkSession(b *testing.B) {
+	s := setup()
+
+	// hide the impl behind the session interface as a consumer
+	var sess view.Session = s
+	ch := sess.Receive()
+
+	msg1 := []byte("msg")
+
+	var wg sync.WaitGroup
+	wg.Add(10)
+	for range 10 {
+		go func() {
+			defer wg.Done()
+			for range ch {
+			}
+		}()
+	}
+
+	assert.True(b, s.enqueue(&view.Message{Payload: msg1}))
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		assert.True(b, s.enqueue(&view.Message{Payload: msg1}))
+	}
+	b.StopTimer()
+
+	b.Cleanup(func() {
+		// no we close the listener, which should unblock the producer
+		sess.Close()
+
+		// wait for the producer to finish
+		wg.Wait()
+		// msg2 should not be published
+		require.Empty(b, ch)
+	})
+}
