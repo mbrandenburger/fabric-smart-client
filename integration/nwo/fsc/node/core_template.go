@@ -162,6 +162,7 @@ fsc:
     resolvers: {{ range Resolvers }}
     - name: {{ .Name }}
       domain: {{ .Domain }}
+      tlsrootca: {{ .TLSRootCa }}
       identity:
         path: {{ .Identity.Path }}
       addresses: {{ range $key, $value := .Addresses }}
