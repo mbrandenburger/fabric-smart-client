@@ -8,8 +8,10 @@ package pingpong_test
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/integration"
@@ -26,6 +28,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"go.uber.org/atomic"
+	"golang.org/x/sync/errgroup"
 )
 
 var _ = Describe("EndToEnd", func() {
@@ -132,6 +135,14 @@ var _ = Describe("EndToEnd", func() {
 
 	})
 
+	Describe("Ping-pong stress", Ordered, func() {
+		s := NewTestSuite(fsc.WebSocket, false, integration.NoReplication)
+		BeforeAll(s.Setup)
+		AfterAll(s.TearDown)
+		It("single client", s.TestManyPingPongSerially)
+		It("some clients", s.TestManyPingPongConcurrently)
+	})
+
 	Describe("Network-based Ping pong With LibP2P", func() {
 		s := NewTestSuite(fsc.LibP2P, false, integration.NoReplication)
 		BeforeEach(s.Setup)
@@ -212,10 +223,11 @@ func NewTestSuite(commType fsc.P2PCommunicationType, alwaysGenerate bool, nodeOp
 	return &TestSuite{
 		TestSuite: integration.NewTestSuite(func() (ii *integration.Infrastructure, err error) {
 			topologies := pingpong.Topology(commType, nodeOpts)
+			withRace := integration.WithRaceDetection
 			if alwaysGenerate || init.CompareAndSwap(false, true) {
-				ii, err = integration.Generate(StartPortWithGeneration(), integration.WithRaceDetection, topologies...)
+				ii, err = integration.Generate(StartPortWithGeneration(), withRace, topologies...)
 			} else {
-				ii, err = integration.Load(0, testdataDir, integration.WithRaceDetection, topologies...)
+				ii, err = integration.Load(0, testdataDir, withRace, topologies...)
 			}
 			ii.DeleteOnStop = false
 			return
@@ -300,6 +312,78 @@ func (s *TestSuite) TestLoadInitPingPong() {
 	res, err := initiator.CallView("init", nil)
 	Expect(err).NotTo(HaveOccurred())
 	Expect(common.JSONUnmarshalString(res)).To(BeEquivalentTo("OK"))
+}
+
+func (s *TestSuite) TestManyPingPongSerially() {
+	var cnt atomic.Int64
+	closing := make(chan struct{})
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		// Get a client for the fsc node labelled initiator
+		initiator := s.II.Client("initiator")
+
+		for {
+			select {
+			case <-closing:
+				return
+			default:
+			}
+			// Initiate a view and check the output
+			res, err := initiator.CallView("init", nil)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(common.JSONUnmarshalString(res)).To(BeEquivalentTo("OK"))
+			cnt.Add(1)
+		}
+	}()
+
+	time.Sleep(10 * time.Second)
+
+	close(closing)
+	wg.Wait()
+	By(fmt.Sprintf("Run %v ping-pong rounds", cnt.Load()))
+}
+
+func (s *TestSuite) TestManyPingPongConcurrently() {
+	var cnt atomic.Int64
+
+	numWorker := 10
+
+	ctx, cancel := context.WithCancel(context.Background())
+	g, gCtx := errgroup.WithContext(ctx)
+	g.SetLimit(numWorker)
+
+	for range numWorker {
+		g.Go(func() error {
+			// Get a client for the fsc node labelled initiator
+			initiator := s.II.Client("initiator")
+
+			for gCtx.Err() == nil {
+				select {
+				case <-gCtx.Done():
+					return gCtx.Err()
+				default:
+				}
+				// Initiate a view and check the output
+				res, err := initiator.CallView("init", nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(common.JSONUnmarshalString(res)).To(BeEquivalentTo("OK"))
+				cnt.Add(1)
+			}
+			return nil
+		})
+	}
+
+	time.Sleep(10 * time.Second)
+	cancel()
+
+	err := g.Wait()
+	Expect(err).ToNot(HaveOccurred())
+
+	By(fmt.Sprintf("Run %v ping-pong rounds", cnt.Load()))
 }
 
 func (s *TestSuite) TestGenerateAndMockPingPong() {
