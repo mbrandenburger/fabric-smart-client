@@ -63,6 +63,14 @@ install-fsccli: ## Install fsccli
 	@go install ./cmd/fsccli
 
 #########################
+# Generate protos
+#########################
+
+.PHONY: protos
+protos: ## Build all proto files
+	./scripts/compile_proto.sh
+
+#########################
 # Container
 #########################
 
@@ -115,7 +123,7 @@ unit-tests-dig:
 	cd platform/view/sdk/dig; go test -cover ./...
 	cd platform/fabric/sdk/dig; go test -cover ./...
 
-run-optl:
+run-otlp:
 	cd platform/view/services/tracing; docker-compose up -d
 
 INTEGRATION_TARGETS =

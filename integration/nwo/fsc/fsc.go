@@ -29,11 +29,10 @@ import (
 	runner2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/common/runner"
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/commands"
 	node2 "github.com/hyperledger-labs/fabric-smart-client/integration/nwo/fsc/node"
-	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring/optl"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/monitoring/otlp"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/services/logging"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils/collections"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils/hash"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/storage/driver"
 	common2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/storage/driver/common"
@@ -243,8 +242,8 @@ func (p *Platform) PostRun(bool) {
 		File: tracing2.FileConfig{
 			Path: "./client-trace.out",
 		},
-		Otpl: tracing2.OtplConfig{
-			Address: fmt.Sprintf("0.0.0.0:%d", optl.JaegerCollectorPort),
+		Otlp: tracing2.OtlpConfig{
+			Address: fmt.Sprintf("0.0.0.0:%d", otlp.JaegerCollectorPort),
 		},
 	})
 	if err != nil {
@@ -264,7 +263,6 @@ func (p *Platform) PostRun(bool) {
 				ConnectionConfig: p.Context.ConnectionConfig(node.UniqueName),
 			},
 			p.Context.ClientSigningIdentity(node.Name),
-			hash.NewSHA256Provider(),
 			tracerProvider,
 		)
 		gomega.Expect(err).NotTo(gomega.HaveOccurred())
@@ -528,7 +526,7 @@ func (p *Platform) GenerateCoreConfig(peer *node2.Replica) {
 		"Resolvers":    func() []*Resolver { return resolvers },
 		"WebEnabled":   func() bool { return p.Topology.WebEnabled },
 		"TracingEndpoint": func() string {
-			return utils.DefaultString(p.Topology.Monitoring.TracingEndpoint, fmt.Sprintf("0.0.0.0:%d", optl.JaegerCollectorPort))
+			return utils.DefaultString(p.Topology.Monitoring.TracingEndpoint, fmt.Sprintf("0.0.0.0:%d", otlp.JaegerCollectorPort))
 		},
 		"SamplingRatio": func() float64 { return p.Topology.Monitoring.TracingSamplingRatio },
 	}).

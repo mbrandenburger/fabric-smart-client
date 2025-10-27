@@ -15,12 +15,11 @@ import (
 	dig2 "github.com/hyperledger-labs/fabric-smart-client/platform/common/sdk/dig"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/services/logging"
 	digutils "github.com/hyperledger-labs/fabric-smart-client/platform/common/utils/dig"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils/hash"
 	endpoint2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/sdk/dig/support/endpoint"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm/host"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm/provider"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm/host/rest"
+	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm2"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/config"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/endpoint"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/events"
@@ -83,9 +82,6 @@ func NewSDKFrom(baseSDK dig2.SDK, registry services.Registry) *SDK {
 
 func (p *SDK) Install() error {
 	err := errors.Join(
-		// Hasher
-		p.Container().Provide(hash.NewSHA256Provider, dig.As(new(hash.Hasher), new(server2.Hasher))),
-
 		// Events
 		p.Container().Provide(simple.NewEventBus, dig.As(new(events.EventSystem), new(events.Publisher), new(events.Subscriber))),
 		p.Container().Provide(func(system events.EventSystem) *events.Service { return &events.Service{EventSystem: system} }),
@@ -128,17 +124,27 @@ func (p *SDK) Install() error {
 		),
 
 		// Comm service
-		p.Container().Provide(provider.NewHostProvider),
-		p.Container().Provide(func(
-			hostProvider host.GeneratorProvider,
-			configProvider driver.ConfigService,
-			endpointService *endpoint.Service,
-			tracerProvider tracing.Provider,
-			metricsProvider metrics2.Provider,
-		) (*comm.Service, error) {
-			return comm.NewService(hostProvider, endpointService, configProvider, metricsProvider)
+		//p.Container().Provide(provider.NewHostProvider),
+		//p.Container().Provide(func(
+		//	hostProvider host.GeneratorProvider,
+		//	configProvider driver.ConfigService,
+		//	endpointService *endpoint.Service,
+		//	tracerProvider tracing.Provider,
+		//	metricsProvider metrics2.Provider,
+		//) (*comm.Service, error) {
+		//	return comm.NewService(hostProvider, endpointService, configProvider, metricsProvider)
+		//}),
+		//p.Container().Provide(digutils.Identity[*comm.Service](), dig.As(new(view.CommLayer))),
+
+		p.Container().Provide(func(ep *endpoint.Service) (*comm2.Service, error) {
+			if err := ep.AddPublicKeyExtractor(&comm.PKExtractor{}); err != nil {
+				return nil, err
+			}
+			ep.SetPublicKeyIDSynthesizer(&rest.PKIDSynthesizer{})
+
+			return comm2.NewService(ep), nil
 		}),
-		p.Container().Provide(digutils.Identity[*comm.Service](), dig.As(new(view.CommLayer))),
+		p.Container().Provide(digutils.Identity[*comm2.Service](), dig.As(new(view.CommLayer))),
 
 		// Sig Service
 		p.Container().Provide(sig.NewDeserializer),
@@ -181,7 +187,8 @@ func (p *SDK) Install() error {
 
 	// Register services in services.Registry
 	err = errors.Join(
-		digutils.Register[*comm.Service](p.Container()),
+		//digutils.Register[*comm.Service](p.Container()),
+		digutils.Register[*comm2.Service](p.Container()),
 		digutils.Register[*config.Provider](p.Container()),
 		digutils.Register[*endpoint.Service](p.Container()),
 		digutils.Register[*id.Provider](p.Container()),
@@ -207,19 +214,22 @@ func (p *SDK) Start(ctx context.Context) error {
 	}
 	return p.Container().Invoke(func(in struct {
 		dig.In
-		GRPCServer     *grpc.GRPCServer
-		ViewManager    StartableViewManager
-		ViewService    server2.Service
-		CommService    *comm.Service
-		WebServer      Server
-		System         *operations.System
-		KVS            *kvs.KVS
-		TracerProvider tracing.Provider
+		GRPCServer  *grpc.GRPCServer
+		ViewManager StartableViewManager
+		ViewService server2.Service
+		//CommService *comm.Service
+		CommService     *comm2.Service
+		WebServer       Server
+		System          *operations.System
+		KVS             *kvs.KVS
+		TracerProvider  tracing.Provider
+		EndpointService *endpoint.Service
 	}) error {
 		if in.GRPCServer != nil {
 			protos.RegisterViewServiceServer(in.GRPCServer.Server(), in.ViewService)
+			comm2.RegisterP2PServiceServer(in.GRPCServer.Server(), in.CommService)
 		}
-		in.CommService.Start(ctx)
+		//in.CommService.Start(ctx)
 
 		server2.InstallViewHandler(in.ViewManager, in.ViewService, in.TracerProvider)
 		go in.ViewManager.Start(ctx)

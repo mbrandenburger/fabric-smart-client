@@ -18,7 +18,6 @@ import (
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/errors"
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/services/logging"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils/hash"
 	mspdriver "github.com/hyperledger-labs/fabric-smart-client/platform/fabric/core/generic/msp/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/fabric/driver"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
@@ -106,8 +105,9 @@ func NewProvider(conf1 *m.MSPConfig, signerService mspdriver.SignerService, sigT
 		return nil, errors.Errorf("setup error: nil conf reference")
 	}
 
+	// note that the idemix protos are still using proto v1
 	var conf idemixmsp.IdemixMSPConfig
-	err := proto.Unmarshal(conf1.Config, &conf)
+	err := proto.UnmarshalV1(conf1.Config, &conf)
 	if err != nil {
 		return nil, errors.Wrap(err, "failed unmarshalling idemix provider config")
 	}
@@ -334,7 +334,7 @@ func (p *Provider) Identity(opts *driver.IdentityOptions) (view.Identity, []byte
 				[]byte(rh),
 			},
 		}
-		logger.Debugf("new idemix identity generated with [%s:%s]", enrollmentID, hash.Hashable(rh))
+		logger.Debugf("new idemix identity generated with [%s:%s]", enrollmentID, logging.SHA256Base64([]byte(rh)))
 		infoRaw, err = auditInfo.Bytes()
 		if err != nil {
 			return nil, nil, err
@@ -412,7 +412,7 @@ func (p *Provider) Info(raw []byte, auditInfo []byte) (string, error) {
 }
 
 func (p *Provider) String() string {
-	return fmt.Sprintf("Idemix Provider [%s]", hash.Hashable(p.Ipk).String())
+	return fmt.Sprintf("Idemix Provider [%s]", logging.SHA256Base64(p.Ipk))
 }
 
 func (p *Provider) EnrollmentID() string {
