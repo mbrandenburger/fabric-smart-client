@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"path"
 	"sync"
 	"testing"
@@ -177,12 +176,10 @@ func TestSQLiteKVS(t *testing.T) {
 }
 
 func TestPostgresKVS(t *testing.T) {
-	if os.Getenv("TEST_POSTGRES") != "true" {
-		t.Skip("set environment variable TEST_POSTGRES to true to include postgres test")
-	}
-	if testing.Short() {
-		t.Skip("skipping postgres test in short mode")
-	}
+	// When running this test together with other tests; it may happen that a container instance is still running
+	// we give this test a slow start ...
+	time.Sleep(5 * time.Second)
+
 	t.Log("starting postgres")
 	terminate, pgConnStr, err := postgres2.StartPostgres(t, false)
 	if err != nil {

@@ -43,6 +43,86 @@ var (
 	serverLogger = logging.MustGetLogger("server")
 )
 
+func BenchmarkTransfer(b *testing.B) {
+
+	logging.Init(logging.Config{LogSpec: "error"})
+
+	p := NewMultiplexedProvider(noop.NewTracerProvider(), &disabled.Provider{})
+
+	var wg sync.WaitGroup
+
+	// server
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		err := p.NewServerStream(w, r, func(s host.P2PStream) {
+			wg.Add(1)
+			go func(srv host.P2PStream) {
+				defer wg.Done()
+				serverLogger.Debugf("[server] new stream established with %v (ID=%v) sessionID=%v", srv.RemotePeerID(), srv.RemotePeerID(), srv.Hash())
+				for {
+					serverLogger.Debugf("[server] reading ...")
+					answer, err := readMsg(srv)
+
+					// deal with EOF
+					if err != nil {
+						if errors.Is(err, io.EOF) {
+							return
+						}
+					}
+
+					// ping
+					assert.NoError(b, err)
+					assert.EqualValues(b, []byte("ping"), answer)
+
+					// pong
+					serverLogger.Info("[server] sending pong ...")
+					err = sendMsg(srv, []byte("pong"))
+					assert.NoError(b, err)
+				}
+			}(s)
+		})
+		assert.NoError(b, err)
+	}))
+
+	srvEndpoint := strings.TrimPrefix(srv.URL, "http://")
+
+	time.Sleep(snoozeTime)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	info := host.StreamInfo{
+		RemotePeerID:      "serverID",
+		RemotePeerAddress: srvEndpoint,
+		ContextID:         "someContextID",
+		SessionID:         "sessionID",
+	}
+	src := host.PeerID("somePeerID")
+	config := &tls.Config{}
+
+	client, err := p.NewClientStream(info, ctx, src, config)
+	assert.NoError(b, err)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+
+		// send ping
+		clientLogger.Info("[client] sending ping ...")
+		err = sendMsg(client, []byte("ping"))
+		assert.NoError(b, err)
+
+		// expect pong
+		clientLogger.Info("[client] reading ...")
+		answer, err := readMsg(client)
+		assert.NoError(b, err)
+		assert.EqualValues(b, []byte("pong"), answer)
+	}
+	b.StopTimer()
+
+	// gracefully shutdown our client
+	err = client.Close()
+	assert.NoError(b, err)
+
+	cancel()
+}
+
 func TestConnections(t *testing.T) {
 	testSetup(t)
 
