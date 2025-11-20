@@ -8,6 +8,7 @@ package endpoint
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/errors"
@@ -27,6 +28,7 @@ type Identity struct {
 type entry struct {
 	Name           string            `yaml:"name,omitempty"`
 	Domain         string            `yaml:"domain,omitempty"`
+	TLSRootCa      string            `yaml:"tlsrootca,omitempty"`
 	Identity       Identity          `yaml:"identity,omitempty"`
 	Addresses      map[string]string `yaml:"addresses,omitempty"`
 	Aliases        []string          `yaml:"aliases,omitempty"`
@@ -55,8 +57,8 @@ type IdentityService interface {
 }
 
 type Backend interface {
-	Bind(ctx context.Context, longTerm view.Identity, ephemeral view.Identity) error
-	AddResolver(name string, domain string, addresses map[string]string, aliases []string, id []byte) (view.Identity, error)
+	Bind(ctx context.Context, longTerm view.Identity, ephemeral ...view.Identity) error
+	AddResolver(name string, domain string, tlsRootCa []byte, addresses map[string]string, aliases []string, id []byte) (view.Identity, error)
 }
 
 type ResolversLoader struct {
@@ -85,6 +87,7 @@ func (r *ResolversLoader) LoadResolvers() error {
 	_, err = r.backend.AddResolver(
 		r.config.GetString("fsc.id"),
 		"",
+		nil,
 		map[string]string{
 			string(endpoint.ViewPort): r.config.GetString("fsc.grpc.address"),
 			string(endpoint.P2PPort):  address,
@@ -115,13 +118,22 @@ func (r *ResolversLoader) LoadResolvers() error {
 				return err
 			}
 			resolver.Id = raw
+
+			// Load TLSRootCa
+			tlsRootCa, err := os.ReadFile(r.config.TranslatePath(resolver.TLSRootCa))
+			if err != nil {
+				return errors.Wrapf(err, "failed to load tlsRootCa from %v", r.config.TranslatePath(resolver.TLSRootCa))
+			}
+			logger.Debugf("tlsRootCA from %v", r.config.TranslatePath(resolver.TLSRootCa))
+			_ = tlsRootCa
+
 			logger.Debugf("resolver [%s,%s][%s] %s",
 				resolver.Name, resolver.Domain, resolver.Addresses,
 				view.Identity(resolver.Id).UniqueID(),
 			)
 
 			// Add entry
-			if _, err := r.backend.AddResolver(resolver.Name, resolver.Domain, resolver.Addresses, resolver.Aliases, resolver.Id); err != nil {
+			if _, err := r.backend.AddResolver(resolver.Name, resolver.Domain, tlsRootCa, resolver.Addresses, resolver.Aliases, resolver.Id); err != nil {
 				return errors.Wrapf(err, "failed adding resolver")
 			}
 
