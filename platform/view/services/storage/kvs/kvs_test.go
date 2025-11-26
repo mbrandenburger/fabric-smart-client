@@ -10,7 +10,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
-	"os"
 	"path"
 	"sync"
 	"testing"
@@ -177,18 +176,12 @@ func TestSQLiteKVS(t *testing.T) {
 }
 
 func TestPostgresKVS(t *testing.T) {
-	if os.Getenv("TEST_POSTGRES") != "true" {
-		t.Skip("set environment variable TEST_POSTGRES to true to include postgres test")
-	}
-	if testing.Short() {
-		t.Skip("skipping postgres test in short mode")
-	}
 	t.Log("starting postgres")
-	terminate, pgConnStr, err := postgres2.StartPostgres(t, false)
+	terminate, pgConnStr, err := postgres2.StartPostgres(t.Context(), postgres2.ConfigFromEnv(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer terminate()
+	t.Cleanup(terminate)
 	t.Log("postgres ready")
 
 	cp := multiplexed.MockTypeConfig(postgres2.Persistence, postgres2.Config{

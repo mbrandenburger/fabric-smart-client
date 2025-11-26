@@ -8,6 +8,7 @@ package fsc
 
 import (
 	"fmt"
+	"path"
 
 	"github.com/hyperledger-labs/fabric-smart-client/integration/nwo/api"
 )
@@ -20,6 +21,7 @@ type ResolverIdentity struct {
 type Resolver struct {
 	Name      string
 	Domain    string
+	TLSRootCa string
 	Identity  ResolverIdentity
 	Addresses map[api.PortName]string
 	Aliases   []string
@@ -36,7 +38,9 @@ func (p *Platform) GenerateResolverMap() {
 		addresses := map[api.PortName]string{
 			// ViewPort: fmt.Sprintf("127.0.0.1:%d", p.Context.PortsByPeerID("fsc", peer.ID())[ListenPort]),
 			// ListenPort: fmt.Sprintf("127.0.0.1:%d", p.Context.PortsByPeerID("fsc", peer.ID())[ListenPort]),
-			P2PPort: p2pEndpoint,
+			//P2PPort: p2pEndpoint,
+			// TODO: a bit cleaner please
+			P2PPort: fmt.Sprintf("127.0.0.1:%d", p.Context.PortsByPeerID("fsc", peer.ID())[ListenPort]),
 		}
 		if peerRoutes, ok := routing[peer.Name]; ok {
 			routing[peer.Name] = append(peerRoutes, p2pEndpoint)
@@ -50,6 +54,7 @@ func (p *Platform) GenerateResolverMap() {
 				Path: p.LocalMSPIdentityCert(peer.Peer),
 			},
 			Domain:    org.Domain,
+			TLSRootCa: path.Join(p.NodeLocalTLSDir(peer.Peer), "ca.crt"),
 			Addresses: addresses,
 			Aliases:   peer.Aliases,
 		}

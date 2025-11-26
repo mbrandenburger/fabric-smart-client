@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+package comm2;
+
+option go_package = "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/comm2";
+
+service P2PService {
+    rpc OpenSessionStream (stream ViewPacket) returns (stream ViewPacket);
+}
+
+message ViewPacket {
+    string sessionID = 1;
+    string contextID = 2;
+    int32 status = 3;
+    bytes payload = 4;
+    string caller = 5;
+}

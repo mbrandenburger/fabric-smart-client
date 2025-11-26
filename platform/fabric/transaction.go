@@ -110,6 +110,11 @@ type ProposalResponse struct {
 	pr driver.ProposalResponse
 }
 
+// NewProposalResponse returns a new instance of ProposalResponse for the passed arguments
+func NewProposalResponse(pr driver.ProposalResponse) *ProposalResponse {
+	return &ProposalResponse{pr: pr}
+}
+
 func (r *ProposalResponse) ResponseStatus() int32 {
 	return r.pr.ResponseStatus()
 }
@@ -185,6 +190,11 @@ type Signer interface {
 type Transaction struct {
 	fns *NetworkService
 	tx  driver.Transaction
+}
+
+// NewTransaction returns a new instance of Transaction for the given arguments
+func NewTransaction(fns *NetworkService, tx driver.Transaction) *Transaction {
+	return &Transaction{fns: fns, tx: tx}
 }
 
 func (t *Transaction) Creator() view.Identity {
@@ -368,7 +378,7 @@ func (t *Transaction) Envelope() (*Envelope, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Envelope{e: env}, nil
+	return NewEnvelope(env), nil
 }
 
 type TransactionManager struct {
@@ -376,7 +386,7 @@ type TransactionManager struct {
 }
 
 func (t *TransactionManager) NewEnvelope() *Envelope {
-	return &Envelope{e: t.fns.fns.TransactionManager().NewEnvelope()}
+	return NewEnvelope(t.fns.fns.TransactionManager().NewEnvelope())
 }
 
 func (t *TransactionManager) NewProposalResponseFromBytes(raw []byte) (*ProposalResponse, error) {

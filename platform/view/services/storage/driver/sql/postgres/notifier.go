@@ -28,13 +28,25 @@ import (
 
 var AllOperations = []driver.Operation{driver.Insert, driver.Update, driver.Delete}
 
+// Notifier implements a simple subscription API to listen for updates on a database table.
+//
+// Deprecated: Notifier exists to track notification on tokens stored in postgres in the Token SDK.
+// The Token SDK is the only user of this, thus, the code may be migrated. Notifier should not be used anymore.
 type Notifier struct {
 	table            string
 	notifyOperations []driver.Operation
 	writeDB          *sql.DB
 	listener         *pgxlisten.Listener
 	primaryKeys      []primaryKey
-	once             sync.Once
+
+	startOnce sync.Once
+	closeOnce sync.Once
+	ctx       context.Context
+	cancel    context.CancelFunc
+
+	// callback
+	subscribers []driver.TriggerCallback
+	mu          sync.RWMutex
 }
 
 var operationMap = map[string]driver.Operation{
@@ -52,6 +64,10 @@ func NewSimplePrimaryKey(name driver.ColumnKey) *primaryKey {
 	return &primaryKey{name: name, valueDecoder: identity}
 }
 
+func NewBytePrimaryKey(name driver.ColumnKey) *primaryKey {
+	return &primaryKey{name: name, valueDecoder: decodeBYTEA}
+}
+
 const (
 	payloadConcatenator = "&"
 	keySeparator        = "_"
@@ -59,10 +75,13 @@ const (
 )
 
 func NewNotifier(writeDB *sql.DB, table, dataSource string, notifyOperations []driver.Operation, primaryKeys ...primaryKey) *Notifier {
-	return &Notifier{
+	ctx, cancel := context.WithCancel(context.Background())
+
+	n := &Notifier{
 		writeDB:          writeDB,
 		table:            table,
 		notifyOperations: notifyOperations,
+		primaryKeys:      primaryKeys,
 		listener: &pgxlisten.Listener{
 			Connect: func(ctx context.Context) (*pgx.Conn, error) { return pgx.Connect(ctx, dataSource) },
 			LogError: func(ctx context.Context, err error) {
@@ -70,21 +89,58 @@ func NewNotifier(writeDB *sql.DB, table, dataSource string, notifyOperations []d
 			},
 			ReconnectDelay: reconnectInterval,
 		},
+		ctx:    ctx,
+		cancel: cancel,
+	}
+
+	// attach handler that calls the subscribers
+	n.listener.Handle(table, &notificationHandler{
+		table:       table,
 		primaryKeys: primaryKeys,
+		callback:    n.dispatch,
+	})
+
+	return n
+}
+
+func (db *Notifier) dispatch(operation driver.Operation, m map[driver.ColumnKey]string) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	for _, callback := range db.subscribers {
+		callback(operation, m)
 	}
 }
 
 func (db *Notifier) Subscribe(callback driver.TriggerCallback) error {
-	db.once.Do(func() {
+	// register the callback
+	db.mu.Lock()
+	db.subscribers = append(db.subscribers, callback)
+	defer db.mu.Unlock()
+
+	// Note that if the db listener is already closed, we still append subscribers here.
+	// Clearly, this is not very robust. A better implementation would check if the Notifier is still open, otherwise
+	// ignore the Subscribe call or return an error.
+	// Since we deprecated this impl, there is no need improve this behavior.
+
+	db.startOnce.Do(func() {
 		logger.Debugf("First subscription for notifier of [%s]. Notifier starts listening...", db.table)
 		go func() {
-			if err := db.listener.Listen(context.TODO()); err != nil {
+			if err := db.listener.Listen(db.ctx); err != nil {
 				logger.Errorf("notifier listen for [%s] failed: %s", db.table, err.Error())
 			}
 		}()
 	})
 
-	db.listener.Handle(db.table, &notificationHandler{table: db.table, primaryKeys: db.primaryKeys, callback: callback})
+	return nil
+}
+
+func (db *Notifier) Close() error {
+	db.closeOnce.Do(func() {
+		db.cancel() // stop listener goroutine
+		db.mu.Lock()
+		db.subscribers = nil
+		db.mu.Unlock()
+	})
 	return nil
 }
 
@@ -134,6 +190,12 @@ func (h *notificationHandler) HandleNotification(ctx context.Context, notificati
 
 func (db *Notifier) UnsubscribeAll() error {
 	logger.Debugf("Unsubscribe called")
+
+	// unregister all callbacks
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	clear(db.subscribers)
+
 	return nil
 }
 
@@ -214,7 +276,7 @@ func concatenateIDs(keys []string) string {
 	return strings.Join(fields, fmt.Sprintf(" || '%s' || ", keySeparator))
 }
 
-func createLockTag(m string) uint64 {
+func createLockTag(m string) int64 {
 	h := sha256.Sum256([]byte(m))
-	return binary.BigEndian.Uint64(h[:])
+	return int64(binary.BigEndian.Uint64(h[:]))
 }
