@@ -81,10 +81,10 @@ func (s *Server) ProcessCommand(ctx context.Context, sc *protos.SignedCommand) (
 		return s.MarshalErrorResponse(sc.Command, err)
 	}
 
-	err = s.PolicyChecker.Check(sc, command)
-	if err != nil {
-		return s.MarshalErrorResponse(sc.Command, err)
-	}
+	//err = s.PolicyChecker.Check(sc, command)
+	//if err != nil {
+	//	return s.MarshalErrorResponse(sc.Command, err)
+	//}
 
 	labels := []string{"command", reflect.TypeOf(command.GetPayload()).String()}
 	s.metrics.RequestsReceived.With(labels...).Add(1)

@@ -4,6 +4,7 @@ go 1.24.3
 
 require (
 	github.com/DATA-DOG/go-sqlmock v1.5.2
+	github.com/HdrHistogram/hdrhistogram-go v1.2.0
 	github.com/IBM/idemix v0.0.2-0.20250313153527-832db18b9478
 	github.com/IBM/idemix/bccsp/types v0.0.0-20250313153527-832db18b9478
 	github.com/IBM/mathlib v0.0.3-0.20250709075152-a138079496c3
@@ -38,7 +39,7 @@ require (
 	github.com/prometheus/client_golang v1.20.5
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.20.1
-	github.com/stretchr/testify v1.10.0
+	github.com/stretchr/testify v1.11.1
 	github.com/tedsuo/ifrit v0.0.0-20230516164442-7862c310ad26
 	github.com/uptrace/opentelemetry-go-extra/otelsql v0.3.2
 	github.com/uptrace/opentelemetry-go-extra/otelzap v0.3.2
@@ -252,7 +253,7 @@ require (
 	github.com/quic-go/webtransport-go v0.8.1-0.20241018022711-4ac2c9250e66 // indirect
 	github.com/raulk/go-watchdog v1.3.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
-	github.com/rogpeppe/go-internal v1.13.1 // indirect
+	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/sourcegraph/conc v0.3.0 // indirect

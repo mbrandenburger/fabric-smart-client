@@ -35,12 +35,14 @@ type Service struct {
 	// we register our grpc service
 	*server
 
-	ctx context.Context
+	baseCtx context.Context
 
 	masterSession view.Session
 
 	sessions    sync.Map
 	connections sync.Map
+
+	certCache sync.Map
 }
 
 func NewService(ep *endpoint.Service) *Service {
@@ -61,7 +63,7 @@ func NewService(ep *endpoint.Service) *Service {
 		server: &server{
 			openingListener: openingListener,
 		},
-		ctx:           ctx,
+		baseCtx:       ctx,
 		masterSession: ms,
 	}
 
@@ -166,6 +168,16 @@ func (s *Service) NewSessionWithID(sessionID, contextID, endpoint string, pkid [
 	return sess, nil
 }
 
+func (s *Service) base64PkId(bytes []byte) string {
+	key := string(bytes)
+	if v, ok := s.certCache.Load(key); ok {
+		return v.(string)
+	}
+	encoded := base64.StdEncoding.EncodeToString(bytes)
+	s.certCache.Store(key, encoded)
+	return encoded
+}
+
 func (s *Service) NewSession(callerViewID string, contextID string, endpoint string, pkid []byte) (view.Session, error) {
 	sessionID := utils.GenerateUUID()
 
@@ -184,13 +196,16 @@ func (s *Service) NewSession(callerViewID string, contextID string, endpoint str
 		return nil, err
 	}
 
+	ctx, cancel := context.WithCancel(s.baseCtx)
+
 	// we set the session metadata
-	ctx := metadata.AppendToOutgoingContext(s.ctx,
+	ctx = metadata.AppendToOutgoingContext(ctx,
 		"caller", callerViewID,
 		"contextID", contextID,
 		"sessionID", sessionID,
 		"endpoint", endpoint,
-		"endpointPKID", base64.StdEncoding.EncodeToString(pkid),
+		//"endpointPKID", base64.StdEncoding.EncodeToString(pkid),
+		"endpointPKID", s.base64PkId(pkid),
 	)
 
 	sc, err := c.OpenSessionStream(ctx)
@@ -208,6 +223,8 @@ func (s *Service) NewSession(callerViewID string, contextID string, endpoint str
 		receiveCh: make(chan *view.Message),
 		closing:   make(chan struct{}, 1),
 		closed:    make(chan struct{}),
+		//
+		closerF: cancel,
 	}
 	logger.Debugf("new session (client-side)")
 

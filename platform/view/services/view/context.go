@@ -136,7 +136,7 @@ func NewContext(
 
 		tracer: tracer,
 	}
-	if session != nil {
+	if session != nil && session.Info().Caller != nil {
 		// Register default session
 		ctx.sessions.PutDefault(session.Info().Caller, session)
 	}

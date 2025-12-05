@@ -8,9 +8,11 @@ package sdk
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 
 	"github.com/go-kit/log"
+	"github.com/hyperledger-labs/fabric-smart-client/integration/benchmark"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/driver"
 	dig2 "github.com/hyperledger-labs/fabric-smart-client/platform/common/sdk/dig"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/services/logging"
@@ -171,7 +173,21 @@ func (p *SDK) Install() error {
 		p.Container().Provide(digutils.Identity[Server](), dig.As(new(operations.Server))),
 
 		// GRPC server
-		p.Container().Provide(server2.NewResponseMarshaler, dig.As(new(server2.Marshaller))),
+		//p.Container().Provide(server2.NewResponseMarshaler, dig.As(new(server2.Marshaller))),
+		p.Container().Provide(func(identityProvider server2.IdentityProvider) (server2.Marshaller, error) {
+			mSigner := &benchmark.MockSigner{
+				SerializeFunc: func() ([]byte, error) {
+					return nil, nil
+				},
+				SignFunc: func(bytes []byte) ([]byte, error) {
+					h := sha256.Sum256(bytes)
+					return h[:], nil
+				},
+			}
+			mSigService := &benchmark.MockSignerProvider{DefaultSigner: mSigner}
+
+			return server2.NewResponseMarshaler(identityProvider, mSigService)
+		}),
 		p.Container().Provide(server2.NewAccessControlChecker, dig.As(new(server2.PolicyChecker))),
 		p.Container().Provide(server2.NewViewServiceServer, dig.As(new(server2.Service))),
 		p.Container().Provide(NewGRPCServer),

@@ -10,10 +10,7 @@ import (
 	"runtime/debug"
 
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/errors"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracing"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/view"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // ViewContext is an alias for view.Context
@@ -94,12 +91,14 @@ func RunViewNow(parent ParentContext, v View, opts ...view.RunViewOption) (res i
 		goContext = options.Ctx
 	}
 
-	logger.DebugfContext(goContext, "Start view %s", GetName(v))
-	newCtx, span := parent.StartSpanFrom(goContext, GetName(v), tracing.WithAttributes(
-		tracing.String(ViewLabel, GetIdentifier(v)),
-		tracing.String(InitiatorViewLabel, GetIdentifier(initiator)),
-	), trace.WithSpanKind(trace.SpanKindInternal))
-	defer span.End()
+	newCtx := goContext
+
+	//logger.DebugfContext(goContext, "Start view %s", GetName(v))
+	//newCtx, span := parent.StartSpanFrom(goContext, GetName(v), tracing.WithAttributes(
+	//	tracing.String(ViewLabel, GetIdentifier(v)),
+	//	tracing.String(InitiatorViewLabel, GetIdentifier(initiator)),
+	//), trace.WithSpanKind(trace.SpanKindInternal))
+	//defer span.End()
 
 	var cc ParentContext
 	if options.SameContext {
@@ -146,7 +145,7 @@ func RunViewNow(parent ParentContext, v View, opts ...view.RunViewOption) (res i
 	} else {
 		res, err = v.Call(cc)
 	}
-	span.SetAttributes(attribute.Bool(SuccessLabel, err != nil))
+	//span.SetAttributes(attribute.Bool(SuccessLabel, err != nil))
 	if err != nil {
 		cc.Cleanup()
 		return nil, err

@@ -11,12 +11,12 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"io"
+	"sync"
 	"time"
 
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/errors"
 	"github.com/hyperledger-labs/fabric-smart-client/pkg/utils/proto"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/common/services/logging"
-	"github.com/hyperledger-labs/fabric-smart-client/platform/common/utils"
 	grpc2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/grpc"
 	"github.com/hyperledger-labs/fabric-smart-client/platform/view/services/tracing"
 	protos2 "github.com/hyperledger-labs/fabric-smart-client/platform/view/services/view/grpc/server/protos"
@@ -53,14 +53,21 @@ type ViewServiceClientImpl struct {
 	GRPCClient         *grpc2.Client
 }
 
+var conn *grpc.ClientConn
+var once sync.Once
+
 func (pc *ViewServiceClientImpl) CreateViewClient() (*grpc.ClientConn, protos2.ViewServiceClient, error) {
-	logger.Debugf("opening connection to [%s]", pc.Address)
-	conn, err := pc.GRPCClient.NewConnection(pc.Address)
-	if err != nil {
-		logger.Errorf("failed creating connection to [%s]: [%s]", pc.Address, err)
-		return conn, nil, errors.Wrapf(err, "failed creating connection to [%s]", pc.Address)
-	}
-	logger.Debugf("opening connection to [%s], done.", pc.Address)
+
+	once.Do(func() {
+		logger.Debugf("opening connection to [%s]", pc.Address)
+		conn2, err := pc.GRPCClient.NewConnection(pc.Address)
+		if err != nil {
+			logger.Errorf("failed creating connection to [%s]: [%s]", pc.Address, err)
+			panic(err)
+		}
+		logger.Debugf("opening connection to [%s], done.", pc.Address)
+		conn = conn2
+	})
 
 	return conn, protos2.NewViewServiceClient(conn), nil
 }
@@ -86,6 +93,27 @@ func NewClient(config *Config, sID SigningIdentity, tracerProvider tracing.Provi
 	if err != nil {
 		return nil, err
 	}
+
+	return &client{
+		Address:          config.ConnectionConfig.Address,
+		RandomnessReader: rand.Reader,
+		Time:             time.Now,
+		ViewServiceClient: &ViewServiceClientImpl{
+			Address:            config.ConnectionConfig.Address,
+			ServerNameOverride: config.ConnectionConfig.ServerNameOverride,
+			GRPCClient:         grpcClient,
+		},
+		SigningIdentity: sID,
+		tracer:          tracerProvider.Tracer("client", tracing.WithMetricsOpts(tracing.MetricsOpts{})),
+	}, nil
+}
+
+func NewClient2(grpcClient *grpc2.Client, config *Config, sID SigningIdentity, tracerProvider tracing.Provider) (*client, error) {
+	// create a grpc client for view peer
+	//grpcClient, err := grpc2.CreateGRPCClient(config.ConnectionConfig)
+	//if err != nil {
+	//	return nil, err
+	//}
 
 	return &client{
 		Address:          config.ConnectionConfig.Address,
@@ -155,12 +183,13 @@ func (s *client) StreamCallView(fid string, input []byte) (*Stream, error) {
 // processCommand calls view client to send grpc request and returns a CommandResponse
 func (s *client) processCommand(ctx context.Context, sc *protos2.SignedCommand) (*protos2.CommandResponse, error) {
 	logger.Debugf("get view service client...")
-	conn, client, err := s.ViewServiceClient.CreateViewClient()
+	//conn, client, err := s.ViewServiceClient.CreateViewClient()
+	_, client, err := s.ViewServiceClient.CreateViewClient()
 	logger.Debugf("get view service client...done")
-	if conn != nil {
-		logger.Debugf("get view service client...got a connection")
-		defer utils.IgnoreErrorFunc(conn.Close)
-	}
+	//if conn != nil {
+	//	logger.Debugf("get view service client...got a connection")
+	//	defer utils.IgnoreErrorFunc(conn.Close)
+	//}
 	if err != nil {
 		logger.Errorf("failed creating view client [%s]", err)
 		return nil, errors.Wrap(err, "failed creating view client")

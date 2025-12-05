@@ -27,6 +27,8 @@ type Session struct {
 
 	closing chan struct{}
 	closed  chan struct{}
+
+	closerF func()
 }
 
 func (s *Session) Info() view.SessionInfo {
@@ -64,6 +66,9 @@ func (s *Session) Close() {
 	select {
 	case s.closing <- struct{}{}:
 		logger.Debugf("closing session")
+		if s.closerF != nil {
+			s.closerF()
+		}
 		close(s.closed)
 		<-s.closed
 	case <-s.closed:

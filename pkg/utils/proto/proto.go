@@ -22,6 +22,10 @@ type (
 	MessageV1 = protoadapt.MessageV1
 )
 
+func Size(m Message) int {
+	return proto.Size(m)
+}
+
 // Unmarshal parses the wire-format message in b and places the result in m.
 // The provided message must be mutable (e.g., a non-nil pointer to a message).
 func Unmarshal(b []byte, m Message) error {
