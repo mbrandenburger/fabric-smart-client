@@ -1,0 +1,9 @@
+{"id":"236061e7-a4e6-4920-9f95-eb2eeb524636","ts":"2026-02-09T19:42:12.395Z","path":"/Users/bur/Developer/gocode/src/github.com/hyperledger-labs/fabric-smart-client/integration/benchmark/README.md","version":"1.0.0","taskID":"cc0b2b90-3e8c-4bec-8c75-5446541ad0fb"}
+
+{"id":"9dba5b44-5dc2-4fc3-ab93-b01b9b09e1d4","ts":"2026-02-09T18:59:24.174Z","path":"/Users/bur/Developer/gocode/src/github.com/hyperledger-labs/fabric-smart-client/integration/benchmark/plots/plot_grpc.py","version":"1.0.0","taskID":"cc0b2b90-3e8c-4bec-8c75-5446541ad0fb"}
+{"id":"77900bfe-2d4b-4093-9c67-e562251e424c","ts":"2026-02-09T19:00:01.228Z","path":"/Users/bur/Developer/gocode/src/github.com/hyperledger-labs/fabric-smart-client/integration/benchmark/plots/plot_node.py","version":"1.0.0","taskID":"cc0b2b90-3e8c-4bec-8c75-5446541ad0fb"}
+{"id":"4b4d9f4c-d842-4e70-9c91-ae17177842a2","ts":"2026-02-09T19:00:26.628Z","path":"/Users/bur/Developer/gocode/src/github.com/hyperledger-labs/fabric-smart-client/integration/benchmark/plots/plot_view.py","version":"1.0.0","taskID":"cc0b2b90-3e8c-4bec-8c75-5446541ad0fb"}
+
+{"id":"ee637247-1ce3-48ee-ae05-f4193898c2f2","ts":"2026-02-09T18:47:53.164Z","path":"/Users/bur/Developer/gocode/src/github.com/hyperledger-labs/fabric-smart-client/integration/benchmark/plots/plot_grpc.py","version":"1.0.0","taskID":"cc0b2b90-3e8c-4bec-8c75-5446541ad0fb"}
+{"id":"d6455796-d6db-4784-8ab7-057d70fa22db","ts":"2026-02-09T18:48:32.836Z","path":"/Users/bur/Developer/gocode/src/github.com/hyperledger-labs/fabric-smart-client/integration/benchmark/plots/plot_node.py","version":"1.0.0","taskID":"cc0b2b90-3e8c-4bec-8c75-5446541ad0fb"}
+{"id":"744776ea-429d-4eb7-8e96-d9bc36bb0fb2","ts":"2026-02-09T18:48:52.453Z","path":"/Users/bur/Developer/gocode/src/github.com/hyperledger-labs/fabric-smart-client/integration/benchmark/plots/plot_view.py","version":"1.0.0","taskID":"cc0b2b90-3e8c-4bec-8c75-5446541ad0fb"}
