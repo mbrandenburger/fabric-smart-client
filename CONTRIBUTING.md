@@ -1,3 +1,4 @@
+change the doc
 # Contributing
 
 We appreciate your contributions to the Fabric Smart Client project. Any help is welcome and there is still much to do.
